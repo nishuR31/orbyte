@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+diagnostics = { path = "crates/diagnostics" }
+ast = { path = "crates/ast" }
+lexer = { path = "crates/lexer" }
+parser = { path = "crates/parser" }
+semantic = { path = "crates/semantic" }
+ir = { path = "crates/ir" }
+ir-builder = { path = "crates/ir-builder" }
+optimizer = { path = "crates/optimizer" }
+runtime = { path = "crates/runtime" }
+backend-cranelift = { path = "crates/backend-cranelift" }
+compiler = { path = "crates/compiler" }
+
+cranelift-codegen = "0.112"
+cranelift-frontend = "0.112"
+cranelift-module = "0.112"
+cranelift-jit = "0.112"
+cranelift-native = "0.112"
+unicode-ident = "1"

@@ -1,0 +1,25 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "engine"
+path = "src/main.rs"
+
+[dependencies]
+compiler.workspace = true
+ir.workspace = true
+runtime.workspace = true
+backend-cranelift.workspace = true
+lexer.workspace = true
+parser.workspace = true
+semantic.workspace = true
+ir-builder.workspace = true
+optimizer.workspace = true
+
+[[bench]]
+name = "components_bench"
+path = "../benches/components_bench.rs"
+harness = false

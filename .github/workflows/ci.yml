@@ -1,0 +1,40 @@
+name: Engine CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Node.js is the independent oracle for the example `.expected` files and
+      # for the randomised differential test (cli/tests/random_diff.rs).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check
+        run: cargo check --workspace --all-targets
+      - name: Test (includes the JIT, the interpreter and the Node differential tests)
+        run: cargo test --workspace
+
+  lint:
+    runs-on: ubuntu-latest
+    # Advisory until the codebase has been through `cargo fmt --all` once and the
+    # first clippy run is clean; then delete the two `continue-on-error` lines.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: true

@@ -1,0 +1,10 @@
+[package]
+name = "ir-builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ast.workspace = true
+semantic.workspace = true
+ir.workspace = true

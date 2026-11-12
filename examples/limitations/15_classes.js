@@ -1,0 +1,20 @@
+// Test: ES6 Classes
+class Animal {
+  constructor(name) {
+    this.name = name;
+  }
+  speak() {
+    return this.name + " makes a sound.";
+  }
+}
+
+class Dog extends Animal {
+  speak() {
+    return this.name + " barks.";
+  }
+}
+
+let d = new Dog("Rex");
+console.log(d.speak());  // "Rex barks."
+console.log(d instanceof Animal);  // true
+
