@@ -2,41 +2,42 @@
   "workload": "stress.js / stress_types.ts",
   "concurrency": 8,
   "batches": 20,
+  "harness": "node ESM (benches/stress_bench.mjs)",
   "execution": [
     {
       "name": "orb AOT",
-      "median_ms": 5.0,
-      "best_ms": 4.91,
+      "median_ms": 6.01,
+      "best_ms": 5.92,
       "failures": 0
     },
     {
       "name": "orb JIT",
-      "median_ms": 7.58,
-      "best_ms": 7.51,
+      "median_ms": 8.54,
+      "best_ms": 8.41,
       "failures": 0
     },
     {
       "name": "orb compat",
-      "median_ms": 319.15,
-      "best_ms": 312.76,
+      "median_ms": 320,
+      "best_ms": 313.3,
       "failures": 0
     },
     {
       "name": "bun",
-      "median_ms": 11.44,
-      "best_ms": 10.97,
+      "median_ms": 12.44,
+      "best_ms": 11.96,
       "failures": 0
     },
     {
       "name": "deno",
-      "median_ms": 25.2,
-      "best_ms": 24.48,
+      "median_ms": 26.28,
+      "best_ms": 25.57,
       "failures": 0
     },
     {
       "name": "node",
-      "median_ms": 47.05,
-      "best_ms": 43.67,
+      "median_ms": 46.9,
+      "best_ms": 42.77,
       "failures": 0
     }
   ],
@@ -44,56 +45,56 @@
     {
       "name": "orb AOT",
       "jobs": 160,
-      "wall_s": 0.41,
-      "jobs_per_s": 395.0,
+      "wall_s": 0.49,
+      "jobs_per_s": 324.9,
       "failures": 0
     },
     {
       "name": "orb JIT",
       "jobs": 160,
-      "wall_s": 0.57,
-      "jobs_per_s": 280.1,
+      "wall_s": 0.65,
+      "jobs_per_s": 246.3,
       "failures": 0
     },
     {
       "name": "bun",
       "jobs": 160,
-      "wall_s": 1.02,
-      "jobs_per_s": 157.1,
+      "wall_s": 1.06,
+      "jobs_per_s": 150.5,
       "failures": 0
     },
     {
       "name": "deno",
       "jobs": 160,
-      "wall_s": 2.2,
-      "jobs_per_s": 72.9,
+      "wall_s": 2.18,
+      "jobs_per_s": 73.4,
       "failures": 0
     },
     {
       "name": "node",
       "jobs": 160,
-      "wall_s": 3.2,
-      "jobs_per_s": 50.0,
+      "wall_s": 3.28,
+      "jobs_per_s": 48.8,
       "failures": 0
     }
   ],
   "typecheck": [
     {
       "name": "orb typecheck (embedded tsz)",
-      "median_ms": 115.06,
-      "best_ms": 113.99,
+      "median_ms": 129.75,
+      "best_ms": 116,
       "failures": 0
     },
     {
       "name": "tsz (external)",
-      "median_ms": 59.79,
-      "best_ms": 59.06,
+      "median_ms": 61.72,
+      "best_ms": 60.83,
       "failures": 0
     },
     {
       "name": "tsgo",
-      "median_ms": 445.47,
-      "best_ms": 430.16,
+      "median_ms": 446.94,
+      "best_ms": 438.11,
       "failures": 0
     }
   ]

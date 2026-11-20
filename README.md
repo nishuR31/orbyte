@@ -128,8 +128,12 @@ old install. Updates are explicit so they never surprise you mid-run.
 [`docs/benchmarks.md`](docs/benchmarks.md) has measured startup-to-output numbers for
 orb (AOT, JIT, compat), bun, deno and node, plus a separate type-check comparison
 between tsz and tsgo. [`docs/stress-benchmarks.md`](docs/stress-benchmarks.md) adds
-8-way parallel throughput and an embedded-checker comparison. Reproduce with
-`python3 benches/runtime_bench.py --runs 50` and `python3 benches/stress_bench.py`.
+8-way parallel throughput and an embedded-checker comparison. The harnesses are
+self-contained Node ESM (`.mjs`) — no Python or third-party packages required; they
+verify every runner's output, skip missing tools, enforce timeouts and write raw JSON
+results. Reproduce with `node benches/runtime_bench.mjs --runs 50` and
+`node benches/stress_bench.mjs`; `node benches/compare.mjs` covers debug/release cross-tool
+timings.
 
 ## Quick start
 
@@ -457,33 +461,38 @@ before that foundation lands.
 
 ## Verification and performance
 
-A 29-program differential corpus (`tests/compare.sh`, `tests/corpus/`) compares the
-orb against Node (JavaScript) and Bun (TypeScript/JSX): **29/29 byte-identical**.
-`orb -` reads stdin. `console.log` uses Node-shaped inspection. The native
-optimiser now verifies only the function it changes and removes dead functions
-before code generation; total JIT compile time on the 5,007-line fixture fell
-from 1327 ms to under 9 ms with identical output. The in-process benchmark
-(`cargo bench --offline --bench components_bench`) now covers all 20 orb
-aspects — native stages, integrated frontends, diagnostics and the compatibility
-runtime — verifies every stage before timing it, uses a true median, excludes
-setup work from timed regions, and keeps benchmark output out of the report.
-See [`docs/comparison.md`](docs/comparison.md) for the full comparison with node,
-bun, tsc, tsgo and tsz, and `python3 benches/compare.py` for reproducible timings.
+Current, reproducible numbers are in [`docs/benchmarks.md`](docs/benchmarks.md) and
+[`docs/stress-benchmarks.md`](docs/stress-benchmarks.md). On a Linux x86_64 machine with
+the normal release build, `fib(25)` startup-to-output medians were: orb AOT 2.902 ms,
+orb JIT 5.303 ms, bun 8.755 ms, deno 21.873 ms, node 42.410 ms, orb compat 79.406 ms.
+The 8-way parallel stress run completed 160 jobs with zero failures for every runner.
+Regenerate with `node benches/runtime_bench.mjs --runs 50` and
+`node benches/stress_bench.mjs`.
 
-For performance work use `target/release/orb`: it is roughly 4–5× faster than
-the debug binary on the compatibility paths (9.8 ms vs 44 ms for `testCaseJs.js`).
+The in-process benchmark (`cargo bench --bench components_bench`) verifies each stage
+before timing it, uses a true median and keeps captured output off the report.
+[`docs/comparison.md`](docs/comparison.md) and [`engine.limitations.md`](engine.limitations.md)
+are historical snapshots from milestone 2.1/3.0 development; they describe state that
+has since changed and are kept for context, not as current test instructions.
+
+Smoke checks from a release build:
+
+```bash
+orb run examples/javascript/calculate.js                      # 610
+orb run examples/javascript/fib.js                            # 75025
+orb build --native examples/javascript/calculate.js -o calc
+./calc                                                        # 610
+orb typecheck benches/cases/fib.ts                            # type check, third-party tsz
+```
 
 ## Build status
 
-The workspace compiles and `cargo test --offline --workspace` passes with
-**0 failures** with Rust 1.99.0 and Node v24.16.0. The build has no warnings. The two
-acceptance programs also pass through the compatibility runtime:
+Rust 1.99.0, Node v24.16.0. `cargo check --workspace --all-targets` and a full
+`cargo test --workspace` passed at the last complete run; the `typecheck` crate's two
+tests also pass. The vendored tsz crates emit a few dead-code/deprecation warnings, so
+the build is not warning-free. Release builds of the combined binary are large (~65 MB)
+and slow on memory-constrained machines; use `CARGO_BUILD_JOBS=1` there.
 
-```bash
-target/debug/orb run testCaseJs.js   # exit 0, 165 lines
-target/debug/orb run testCaseTs.ts   # exit 0, 23 lines
-```
-
-The exact, deliberately rejected features are listed in
+The deliberately rejected native features are listed in
 [`engine.limitations.md`](engine.limitations.md); `--native` makes those diagnoses
 visible.

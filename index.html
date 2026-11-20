@@ -162,8 +162,8 @@
       <a class="btn" href="https://github.com/nishuR31/orbyte">GitHub &nearr;</a>
     </div>
     <div class="stats">
-      <div class="stat"><b>2.1&times;</b><span>faster than orb JIT</span></div>
-      <div class="stat"><b>4.3&times;</b><span>faster than bun, measured</span></div>
+      <div class="stat"><b>1.8&times;</b><span>faster than orb JIT</span></div>
+      <div class="stat"><b>3.0&times;</b><span>faster than bun, measured</span></div>
       <div class="stat"><b>0</b><span>runtime deps for AOT binaries</span></div>
     </div>
   </div>
@@ -220,24 +220,25 @@
       <div class="chart">
         <h3>Startup + execution &mdash; fib(25)</h3>
         <div class="note">all outputs verified &middot; lower is better &middot; reproducible with the harness below</div>
-        <div class="row"><div class="label"><b>orb AOT binary</b><span>1.897 ms</span></div><div class="track"><div class="bar aot" style="width:2.3%"></div></div></div>
-        <div class="row"><div class="label"><b>orb JIT (--native)</b><span>4.079 ms</span></div><div class="track"><div class="bar jit" style="width:5.0%"></div></div></div>
-        <div class="row"><div class="label"><b>bun</b><span>8.164 ms</span></div><div class="track"><div class="bar other" style="width:10.1%"></div></div></div>
-        <div class="row"><div class="label"><b>deno (--no-check)</b><span>21.479 ms</span></div><div class="track"><div class="bar other" style="width:26.5%"></div></div></div>
-        <div class="row"><div class="label"><b>node</b><span>44.228 ms</span></div><div class="track"><div class="bar other" style="width:54.7%"></div></div></div>
-        <div class="row"><div class="label"><b>orb compat (Boa)</b><span>80.901 ms</span></div><div class="track"><div class="bar compat" style="width:100%"></div></div></div>
+        <div class="row"><div class="label"><b>orb AOT binary</b><span>2.902 ms</span></div><div class="track"><div class="bar aot" style="width:3.7%"></div></div></div>
+        <div class="row"><div class="label"><b>orb JIT (--native)</b><span>5.303 ms</span></div><div class="track"><div class="bar jit" style="width:6.7%"></div></div></div>
+        <div class="row"><div class="label"><b>bun</b><span>8.755 ms</span></div><div class="track"><div class="bar other" style="width:11.0%"></div></div></div>
+        <div class="row"><div class="label"><b>deno (--no-check)</b><span>21.873 ms</span></div><div class="track"><div class="bar other" style="width:27.5%"></div></div></div>
+        <div class="row"><div class="label"><b>node</b><span>42.410 ms</span></div><div class="track"><div class="bar other" style="width:53.4%"></div></div></div>
+        <div class="row"><div class="label"><b>orb compat (Boa)</b><span>79.406 ms</span></div><div class="track"><div class="bar compat" style="width:100%"></div></div></div>
         <div class="legend"><span><i class="dot" style="background:var(--mint)"></i>AOT</span><span><i class="dot" style="background:var(--blue)"></i>JIT</span><span><i class="dot" style="background:#4b5a70"></i>other runtimes</span><span><i class="dot" style="background:var(--amber)"></i>compat fallback</span></div>
       </div>
       <div class="grid cards-2" style="margin-top:1rem">
         <div class="card">
           <h3>Type checkers &mdash; separate job</h3>
-          <p>Not comparable with execution: orb has no type checker. Isolated config
-          (<code>types: []</code>, <code>skipLibCheck</code>), median of 50 runs.</p>
+          <p>Reference numbers for the external CLI checkers, not comparable with execution.
+          orb embeds the same tsz checker in-process; see the stress run below. Isolated
+          config (<code>types: []</code>, <code>skipLibCheck</code>), median of 50 runs.</p>
           <table style="margin-top:1rem">
             <thead><tr><th>Checker</th><th>Median</th></tr></thead>
             <tbody>
-              <tr><td>tsz (tsz-org/tsz)</td><td>39.608 ms</td></tr>
-              <tr><td>tsgo (@typescript/native-preview)</td><td>123.601 ms</td></tr>
+              <tr><td>tsz (tsz-org/tsz)</td><td>39.724 ms</td></tr>
+              <tr><td>tsgo (@typescript/native-preview)</td><td>118.884 ms</td></tr>
             </tbody>
           </table>
         </div>
@@ -247,17 +248,17 @@
           <div class="code" style="margin-top:1rem">
             <span class="prompt">$</span> cargo build --release<br>
             <span class="prompt">$</span> ./target/release/orb build --native benches/cases/fib.js -o benches/cases/fib_native<br>
-            <span class="prompt">$</span> python3 benches/runtime_bench.py --runs 50
+            <span class="prompt">$</span> node benches/runtime_bench.mjs --runs 50
           </div>
           <p style="margin-top:1rem"><a href="https://github.com/nishuR31/orbyte/blob/main/docs/benchmarks.md">Full methodology and raw results &rarr;</a></p>
         </div>
       </div>
       <div class="card" style="margin-top:1rem">
         <h3>Stress run &mdash; 8-way parallel + type checking</h3>
-        <p>160 parallel jobs, zero failures. Median latency: orb AOT 5.00&nbsp;ms,
-        orb JIT 7.58&nbsp;ms, bun 11.44&nbsp;ms, deno 25.20&nbsp;ms, node 47.05&nbsp;ms.
-        Type checking a 16&nbsp;KB TS file: tsz 59.79&nbsp;ms, embedded orb tsz
-        115.06&nbsp;ms, tsgo 445.47&nbsp;ms (same strict config; the remaining gap is
+        <p>160 parallel jobs, zero failures. Median latency: orb AOT 6.01&nbsp;ms,
+        orb JIT 8.54&nbsp;ms, bun 12.44&nbsp;ms, deno 26.28&nbsp;ms, node 46.90&nbsp;ms.
+        Type checking a 16&nbsp;KB TS file: tsz 61.72&nbsp;ms, embedded orb tsz
+        129.75&nbsp;ms, tsgo 446.94&nbsp;ms (same strict config; the remaining gap is
         integration overhead in the combined executable). See the methodology note for why.</p>
         <p style="margin-top:1rem"><a href="https://github.com/nishuR31/orbyte/blob/main/docs/stress-benchmarks.md">Stress results and reproduction &rarr;</a></p>
       </div>
@@ -322,6 +323,9 @@ cargo build --release
         <li><b>Some development scripts need Bash.</b> The <code>tests/</code> and
           <code>examples/</code> helper scripts are not part of CI; POSIX shell syntax in
           <code>package.json</code> scripts needs Git Bash on Windows.</li>
+        <li><b>Type checking is third-party and single-file.</b> <code>orb typecheck</code> embeds
+          <a href="https://github.com/tsz-org/tsz">tsz</a> with ES5 + ESNext + DOM libs, but does
+          not read <code>tsconfig.json</code>, resolve imports or type-check a whole project.</li>
         <li><b>Early project.</b> Version 3.0.0, English-only docs, no stable API guarantees for the
           embedded compatibility runtime yet.</li>
       </ul>

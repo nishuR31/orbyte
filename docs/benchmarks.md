@@ -19,24 +19,26 @@ interpreter paths, compilation/transpilation. These numbers describe
 
 | Runner | Median (ms) | Best (ms) | Relative to orb AOT |
 |---|---:|---:|---:|
-| orb AOT binary | 1.897 | 1.793 | 1.0&times; |
-| orb JIT (`--native`) | 4.079 | 3.956 | 2.1&times; |
-| bun (JS) | 8.164 | 7.942 | 4.3&times; |
-| deno (`--no-check`, JS) | 21.479 | 20.812 | 11.3&times; |
-| node (JS) | 44.228 | 40.334 | 23.3&times; |
-| orb compat (`--compat`, Boa) | 80.901 | 78.233 | 42.6&times; |
+| orb AOT binary | 2.902 | 2.805 | 1.0&times; |
+| orb JIT (`--native`) | 5.303 | 5.189 | 1.8&times; |
+| bun (JS) | 8.755 | 8.507 | 3.0&times; |
+| deno (`--no-check`, JS) | 21.873 | 21.437 | 7.5&times; |
+| node (JS) | 42.410 | 38.117 | 14.6&times; |
+| orb compat (`--compat`, Boa) | 79.406 | 78.649 | 27.4&times; |
 
 Type checkers are a **different job** and are measured separately with an isolated
 config (`benches/cases/tsconfig.json`, `types: []`, `skipLibCheck`):
 
 | Checker | Median (ms) | Best (ms) |
 |---|---:|---:|
-| tsz (`tsz-org/tsz`, `--noEmit -p`) | 39.608 | — |
-| tsgo (`@typescript/native-preview`, `--noEmit -p`) | 123.601 | — |
+| tsz (`tsz-org/tsz`, `--noEmit -p`) | 39.724 | — |
+| tsgo (`@typescript/native-preview`, `--noEmit -p`) | 118.884 | — |
 
-orb has no type checker, so those numbers are information, not a speedup claim. On this
-small file tsz is about 3.1&times; faster than tsgo, consistent with the tsz project's
-own small-sample claim.
+orb now embeds the same tsz checker in `orb typecheck`; these are the external CLI
+binaries on the same small file and serve as a reference point, not a speedup claim.
+On this file tsz is about 3.1&times; faster than tsgo, consistent with the tsz project's
+own small-sample claim. See [`stress-benchmarks.md`](stress-benchmarks.md) for the
+head-to-head with the embedded checker on a larger file.
 
 ## Reading the table
 
@@ -56,7 +58,7 @@ npm install -g @typescript/native-preview deno    # bun was already installed
 curl -fsSL https://tsz.dev/install | sh            # tsz from tsz-org/tsz
 cargo build --release
 ./target/release/orb build --native benches/cases/fib.js -o benches/cases/fib_native
-python3 benches/runtime_bench.py --runs 50
+node benches/runtime_bench.mjs --runs 50
 ```
 
 The script verifies every runner's output, prints a Markdown table, and writes the raw

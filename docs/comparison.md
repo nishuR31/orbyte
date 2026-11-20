@@ -1,4 +1,13 @@
-# Engine 3.0.0 — verification and comparison
+# Engine 3.0.0 — verification and comparison (historical snapshot)
+
+> **Historical document.** Recorded on 2026-11-19. The `engine` binary was later
+> renamed to `orb`, and the `tests/` corpus plus `testCaseJs.js` / `testCaseTs.ts`
+> were removed from the checkout. Commands and paths below do not describe the
+> current tree. For current numbers see [`benchmarks.md`](benchmarks.md) and
+> [`stress-benchmarks.md`](stress-benchmarks.md); for current commands see the
+> [README](../README.md). Since this snapshot, `orb typecheck` has been added:
+> it embeds the third-party tsz checker, so the "not type-checked" note in §2 is
+> no longer accurate.
 
 Date: 2026-11-19. Machine: Linux x86-64, Rust 1.99.0, Node v24.16.0,
 Bun 1.4.3, `tsc` 7.0.2, `tsgo` 7.0.0-dev.20260707.2, `tsz` 7.0.2.
@@ -120,7 +129,7 @@ included and costs ~3 ms here, so these are conservative):
 Use `target/release/engine` for performance work; the debug binary is roughly
 4–5× slower on the compatibility paths.
 
-`python3 benches/compare.py [--runs N]` reproduces the cross-tool comparison.
+`node benches/compare.mjs [--runs N]` reproduces the cross-tool comparison.
 Note that process spawning on this host is unusually slow (~30–60 ms per
 `subprocess.run`), which dominates and quantifies wall-clock numbers comparing
 separate binaries; use the in-process component benchmark for engine changes.

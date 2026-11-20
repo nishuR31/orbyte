@@ -1,8 +1,14 @@
-# Engine Limitations Report
-> Generated: 2026-11-13 | Binary: `target/debug/engine` (version 3.0.0)  
-> Full test suite: **165 unit & integration tests, 0 failures** ✅  
-> Native subset probes: **7/18 pass** ✅ | **11/18 rejected cleanly ("reject, never miscompile")** 🛡️  
-> The default CLI now executes valid programs outside the native subset through a compatibility runtime. Use `--native` to see the raw native rejection.
+# Native subset limitations (historical report)
+
+> Generated 2026-11-13 for the `engine` binary, now renamed to `orb`. The test counts
+> and probe results below describe that snapshot, not the current checkout. The
+> deliberately rejected feature list is still accurate; use `orb <file> --native` to
+> see the current diagnostic. Current build/verification status is in the
+> [README](README.md#build-status).
+>
+> TypeScript type checking is now available separately through `orb typecheck`, which
+> embeds the third-party tsz checker. It does not change the native subset described
+> here and does not make typed programs eligible for AOT output.
 
 ---
 
@@ -21,7 +27,8 @@ miscompile"** rule: every unsupported feature below is a precise compile-time er
    fallback directly.
 
 The fallback is **not** the 3.0 dynamic runtime. It is a self-contained compatibility path
-with its own limits: there is no import map, TypeScript is not type-checked, and
+with its own limits: there is no import map, the compatibility path does not type-check
+(use `orb typecheck` for that, via the third-party tsz checker), and
 `document`/`React` are stubs for JSX. Relative and absolute ESM file imports work, as do
 bare package specifiers resolved through `node_modules` (`main`/`exports` including
 subpath keys and wildcards, scoped packages, `import`/`require` conditions) and Common

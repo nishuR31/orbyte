@@ -1,6 +1,12 @@
 # Engine 3.0 — Architectural Redesign Proposal
 
-**Status:** proposal; preserved as the implementation plan. An interim compatibility runtime (SWC + Boa) was added in `crates/compat` to execute programs outside the native subset; it does not implement this proposal. The `engine` binary additionally exposes a Node/Bun-shaped command surface (`run`, `test`, `repl`, `check`, `inspect`, `build`, `init`, package management, and `install bun`) on top of the two execution paths.
+**Status:** proposal; preserved as the implementation plan, written when the binary was
+named `engine` (now `orb`). An interim compatibility runtime (SWC + Boa) was added in
+`crates/compat` to execute programs outside the native subset; it does not implement
+this proposal. The `orb` binary additionally exposes a Node/Bun-shaped command surface
+(`run`, `test`, `repl`, `check`, `typecheck`, `inspect`, `build`, `init`, package
+management, `install bun` and `self-update`) on top of the two execution paths. Type
+checking is third-party tsz, vendored under `third_party/tsz`.
 **Target version:** `3.0.0`
 **Date:** 2026-11-13
 **Scope:** the existing `lexer → parser → AST → semantic/HIR → ir-builder → ir → optimizer → backend-cranelift` pipeline and the `runtime::interp` reference interpreter.

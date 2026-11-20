@@ -20,6 +20,10 @@ node_modules/
 .env
 .env.*
 
+# Local agent/editor state
+.nishu
+.context
+
 # OS and editor noise
 .DS_Store
 *.swp

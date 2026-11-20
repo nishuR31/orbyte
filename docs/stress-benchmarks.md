@@ -13,30 +13,30 @@ type checking, output verified on every run. Parallel test: 8 concurrent process
 
 | Tool | Median (ms) | Best (ms) | Failures |
 |---|---:|---:|---:|
-| orb AOT | 5.00 | 4.91 | 0 |
-| orb JIT (`--native`) | 7.58 | 7.51 | 0 |
-| bun | 11.44 | 10.97 | 0 |
-| deno (`--no-check`) | 25.20 | 24.48 | 0 |
-| node | 47.05 | 43.67 | 0 |
-| orb compat (Boa) | 319.15 | 312.76 | 0 |
+| orb AOT | 6.01 | 5.92 | 0 |
+| orb JIT (`--native`) | 8.54 | 8.41 | 0 |
+| bun | 12.44 | 11.96 | 0 |
+| deno (`--no-check`) | 26.28 | 25.57 | 0 |
+| node | 46.90 | 42.77 | 0 |
+| orb compat (Boa) | 320.00 | 313.30 | 0 |
 
 ## Parallel throughput (8 concurrent × 20 batches)
 
 | Tool | Jobs | Wall (s) | Jobs/s | Failures |
 |---|---:|---:|---:|---:|
-| orb AOT | 160 | 0.41 | 395.0 | 0 |
-| orb JIT | 160 | 0.57 | 280.1 | 0 |
-| bun | 160 | 1.02 | 157.1 | 0 |
-| deno | 160 | 2.20 | 72.9 | 0 |
-| node | 160 | 3.20 | 50.0 | 0 |
+| orb AOT | 160 | 0.49 | 324.9 | 0 |
+| orb JIT | 160 | 0.65 | 246.3 | 0 |
+| bun | 160 | 1.06 | 150.5 | 0 |
+| deno | 160 | 2.18 | 73.4 | 0 |
+| node | 160 | 3.28 | 48.8 | 0 |
 
 ## Type checking (same strict config, libs ES5 + ESNext + DOM)
 
 | Tool | Median (ms) | Best (ms) | Failures |
 |---|---:|---:|---:|
-| tsz (external binary) | 59.79 | 59.06 | 0 |
-| orb typecheck (embedded tsz) | 115.06 | 113.99 | 0 |
-| tsgo | 445.47 | 430.16 | 0 |
+| tsz (external binary) | 61.72 | 60.83 | 0 |
+| orb typecheck (embedded tsz) | 129.75 | 116.00 | 0 |
+| tsgo | 446.94 | 438.11 | 0 |
 
 The embedded checker uses the same tsz source as the external binary and this orb was
 rebuilt with the normal release profile (`opt-level=3`, thin LTO, serial jobs). That
@@ -51,7 +51,7 @@ checker.
 ```bash
 CARGO_BUILD_JOBS=1 cargo build --release -p cli
 ./target/release/orb build --native benches/cases/stress.js -o benches/cases/stress_native
-python3 benches/stress_bench.py
+node benches/stress_bench.mjs
 ```
 
 The harness skips missing tools, prints all three tables and writes the JSON results.
