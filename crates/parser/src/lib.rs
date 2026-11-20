@@ -194,6 +194,27 @@ impl Parser {
     /// Skips TypeScript/ES module header (`export ...` or `import ...`).
     fn skip_module_decl(&mut self) -> Result<Stmt> {
         let start = self.advance(); // consume 'export' or 'import'
+        if start.kind == T::Import {
+            // `import(...)` and `import.meta` are expressions, not module
+            // declarations. The native pipeline has no module system, so reject
+            // them rather than silently dropping a statement that should have
+            // executed (or resolved a module).
+            match self.peek().kind {
+                T::LParen => {
+                    return Err(Diagnostic::new(
+                        "dynamic import is not supported by the native pipeline",
+                        start.span.join(self.peek().span),
+                    ));
+                }
+                T::Dot => {
+                    return Err(Diagnostic::new(
+                        "import.meta is not supported by the native pipeline",
+                        start.span.join(self.peek().span),
+                    ));
+                }
+                _ => {}
+            }
+        }
         if start.kind == T::Export {
             // 'export const x = 1;' -> parse the inner statement ('const x = 1;')
             if matches!(self.peek().kind, T::Let | T::Const | T::Var | T::Function) {
@@ -1269,5 +1290,23 @@ mod tests {
         // For now this should at least not crash - optional params become regular params
         let p = parse("function f(x: number, y?: number): number { return x; }").unwrap();
         assert!(matches!(&p.body[0].kind, StmtKind::Function(f) if f.params.len() == 2));
+    }
+
+    #[test]
+    fn dynamic_import_is_rejected() {
+        let error = parse("import(\"./dep.js\").then(() => {});").unwrap_err();
+        assert!(
+            error.to_string().contains("dynamic import is not supported"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn import_meta_is_rejected() {
+        let error = parse("import.meta.url;").unwrap_err();
+        assert!(
+            error.to_string().contains("import.meta is not supported"),
+            "{error}"
+        );
     }
 }

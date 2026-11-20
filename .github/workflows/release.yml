@@ -1,0 +1,79 @@
+name: Release
+
+# Pushing a v* tag builds one archive per OS/architecture and attaches all of
+# them to a GitHub release. Archive names match scripts/install.sh and
+# scripts/install.ps1 and the table in README.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: orb-linux-x86_64
+          - os: ubuntu-24.04-arm
+            asset: orb-linux-aarch64
+          - os: macos-15-intel
+            asset: orb-macos-x86_64
+          - os: macos-latest
+            asset: orb-macos-aarch64
+          - os: windows-latest
+            asset: orb-windows-x86_64
+          - os: windows-11-arm
+            asset: orb-windows-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up MSVC linker (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: bash
+        run: cargo build --release --workspace
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/orb dist/orb
+          cp target/release/libruntime.a dist/libruntime.a
+          tar -czf "${{ matrix.asset }}.tar.gz" -C dist orb libruntime.a
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target/release/orb.exe dist/
+          Copy-Item target/release/runtime.lib dist/
+          Compress-Archive -Path dist/orb.exe, dist/runtime.lib -DestinationPath "${{ matrix.asset }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

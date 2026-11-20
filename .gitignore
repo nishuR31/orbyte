@@ -1,1 +1,26 @@
+# Rust build output
 /target
+**/target/
+**/*.rs.bk
+
+# Generated AOT executables from the benchmark harnesses
+/benches/cases/fib_native
+/benches/cases/stress_native
+*.native
+
+# Python caches (benchmark scripts)
+__pycache__/
+*.py[cod]
+
+# Node artifacts
+node_modules/
+*.tsbuildinfo
+
+# Local environment / secrets
+.env
+.env.*
+
+# OS and editor noise
+.DS_Store
+*.swp
+*~

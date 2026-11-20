@@ -1,0 +1,22 @@
+[package]
+name = "compat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+boa_engine.workspace = true
+swc.workspace = true
+swc_common.workspace = true
+swc_ecma_ast.workspace = true
+swc_ecma_parser.workspace = true
+# Enabled for its `inline-helpers` feature: SWC then emits self-contained
+# helper functions instead of `@swc/helpers` imports.
+swc_ecma_transforms_base.workspace = true
+serde_json.workspace = true
+
+# Resolution pin: Boa 0.22 pins the ICU 2.3 line (`icu_normalizer ~2.3.0`),
+# while `textwrap 0.16.4` (via `swc_error_reporters` -> `miette`) asks for
+# `icu_segmenter ^2.3.0`, which otherwise resolves to 2.4.0 and requires
+# `icu_collections ~2.4.0`. Pinning the segmenter to 2.3 keeps one ICU line.
+icu_segmenter = "=2.3.0"

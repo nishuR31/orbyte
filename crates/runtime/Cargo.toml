@@ -4,5 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Also built as a static library: `engine build --native` links it into the
+# standalone executables it emits, so the rt_* helpers resolve without the JIT
+# symbol map.
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 ir.workspace = true

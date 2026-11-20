@@ -1,0 +1,11 @@
+[package]
+name = "typecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The type checker is the Rust `tsz-core` library from tsz-org/tsz (v0.1.75),
+# used as a library rather than shelling out to the `tsz` binary.
+[dependencies]
+tsz = { path = "../../third_party/tsz/crates/tsz-core", package = "tsz-core", default-features = false }
+serde_json.workspace = true

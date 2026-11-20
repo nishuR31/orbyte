@@ -59,6 +59,18 @@ pub struct ExecContext {
 pub const CTX_DEPTH_OFFSET: i32 = 0;
 pub const CTX_ERROR_OFFSET: i32 = 4;
 
+/// Reports a failure recorded by generated code to stderr. Called by the C
+/// `main` emitted for standalone executables, which has no embedder to return
+/// a `RuntimeError` to.
+#[no_mangle]
+pub extern "C" fn rt_report_error(code: u32) {
+    let error = match code {
+        ERR_STACK_OVERFLOW => RuntimeError::StackOverflow,
+        other => RuntimeError::Internal(format!("unknown error code {other}")),
+    };
+    let _ = writeln!(std::io::stderr(), "{error}");
+}
+
 impl ExecContext {
     /// Converts the recorded error code into a result.
     pub fn status(&self) -> Result<(), RuntimeError> {
@@ -138,11 +150,13 @@ pub fn format_number(value: f64) -> String {
 
 // ---- helpers called from JIT-compiled code (C ABI) ----
 
+#[no_mangle]
 pub extern "C" fn rt_print_f64(v: f64) {
     let _ = writeln!(std::io::stdout(), "{}", format_number(v));
 }
 
 /// Booleans are passed zero-extended to 32 bits to keep the ABI unambiguous.
+#[no_mangle]
 pub extern "C" fn rt_print_bool(v: u32) {
     let _ = writeln!(std::io::stdout(), "{}", if v != 0 { "true" } else { "false" });
 }
@@ -155,11 +169,13 @@ pub struct JsString {
 }
 
 /// Creates a new `JsString` handle on the heap and returns its pointer.
+#[no_mangle]
 pub extern "C" fn rt_alloc_str(ptr: *const u8, len: usize) -> *mut JsString {
     Box::into_raw(Box::new(JsString { ptr, len, owned: false }))
 }
 
 /// Concatenates two `JsString` handles into a new owned heap-allocated `JsString`.
+#[no_mangle]
 pub extern "C" fn rt_concat_str(a: *const JsString, b: *const JsString) -> *mut JsString {
     let (ptr_a, len_a) = if a.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*a).ptr, (*a).len) } };
     let (ptr_b, len_b) = if b.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*b).ptr, (*b).len) } };
@@ -183,6 +199,7 @@ pub extern "C" fn rt_concat_str(a: *const JsString, b: *const JsString) -> *mut 
 }
 
 /// Prints a `JsString` handle.
+#[no_mangle]
 pub extern "C" fn rt_print_str(s: *const JsString) {
     if !s.is_null() {
         let (ptr, len) = unsafe { ((*s).ptr, (*s).len) };
@@ -197,6 +214,7 @@ pub extern "C" fn rt_print_str(s: *const JsString) {
 }
 
 /// Compares two `JsString` handles for equality. Returns 1 if equal, 0 if not.
+#[no_mangle]
 pub extern "C" fn rt_str_eq(a: *const JsString, b: *const JsString) -> u32 {
     let (ptr_a, len_a) = if a.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*a).ptr, (*a).len) } };
     let (ptr_b, len_b) = if b.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*b).ptr, (*b).len) } };
@@ -213,6 +231,7 @@ pub extern "C" fn rt_str_eq(a: *const JsString, b: *const JsString) -> u32 {
 }
 
 /// Converts an f64 number to a JsString handle using ECMAScript format.
+#[no_mangle]
 pub extern "C" fn rt_num_to_str(val: f64) -> *mut JsString {
     let text = format_number(val);
     let bytes = text.into_bytes().into_boxed_slice();
@@ -222,12 +241,14 @@ pub extern "C" fn rt_num_to_str(val: f64) -> *mut JsString {
 }
 
 /// Converts a boolean (passed as u32) to a JsString handle.
+#[no_mangle]
 pub extern "C" fn rt_bool_to_str(val: u32) -> *mut JsString {
     let text = if val != 0 { "true" } else { "false" };
     rt_alloc_str(text.as_ptr(), text.len())
 }
 
 /// Parses a JsString handle into an f64 number per ECMAScript rules.
+#[no_mangle]
 pub extern "C" fn rt_str_to_num(s: *const JsString) -> f64 {
     let (ptr, len) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let text = if !ptr.is_null() && len > 0 {
@@ -243,11 +264,13 @@ pub extern "C" fn rt_str_to_num(s: *const JsString) -> f64 {
 }
 
 /// Converts a boolean (passed as u32) to f64 (1.0 or 0.0).
+#[no_mangle]
 pub extern "C" fn rt_bool_to_num(val: u32) -> f64 {
     if val != 0 { 1.0 } else { 0.0 }
 }
 
 /// Returns the byte/character length of a JsString handle as f64.
+#[no_mangle]
 pub extern "C" fn rt_str_len(s: *const JsString) -> f64 {
     if s.is_null() {
         return 0.0;
@@ -255,6 +278,7 @@ pub extern "C" fn rt_str_len(s: *const JsString) -> f64 {
     unsafe { (*s).len as f64 }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_str_upper(s: *const JsString) -> *mut JsString {
     let (ptr, len) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let text = if !ptr.is_null() && len > 0 {
@@ -269,6 +293,7 @@ pub extern "C" fn rt_str_upper(s: *const JsString) -> *mut JsString {
     Box::into_raw(Box::new(JsString { ptr, len, owned: true }))
 }
 
+#[no_mangle]
 pub extern "C" fn rt_str_includes(s: *const JsString, needle: *const JsString) -> u32 {
     let (ptr_s, len_s) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let (ptr_n, len_n) = if needle.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*needle).ptr, (*needle).len) } };
@@ -285,6 +310,7 @@ pub extern "C" fn rt_str_includes(s: *const JsString, needle: *const JsString) -
     if text.contains(n) { 1 } else { 0 }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_str_slice(s: *const JsString, start: f64, end: f64) -> *mut JsString {
     let (ptr, len) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let text = if !ptr.is_null() && len > 0 {
@@ -305,6 +331,7 @@ pub extern "C" fn rt_str_slice(s: *const JsString, start: f64, end: f64) -> *mut
     Box::into_raw(Box::new(JsString { ptr, len, owned: true }))
 }
 
+#[no_mangle]
 pub extern "C" fn rt_str_replace(s: *const JsString, from: *const JsString, to: *const JsString) -> *mut JsString {
     let (ptr_s, len_s) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let (ptr_f, len_f) = if from.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*from).ptr, (*from).len) } };
@@ -331,6 +358,7 @@ pub extern "C" fn rt_str_replace(s: *const JsString, from: *const JsString, to: 
     Box::into_raw(Box::new(JsString { ptr, len, owned: true }))
 }
 
+#[no_mangle]
 pub extern "C" fn rt_str_split_count(s: *const JsString, sep: *const JsString) -> f64 {
     let (ptr_s, len_s) = if s.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*s).ptr, (*s).len) } };
     let (ptr_sep, len_sep) = if sep.is_null() { (std::ptr::null(), 0) } else { unsafe { ((*sep).ptr, (*sep).len) } };
@@ -347,6 +375,7 @@ pub extern "C" fn rt_str_split_count(s: *const JsString, sep: *const JsString) -
     text.split(sep_str).count() as f64
 }
 
+#[no_mangle]
 pub extern "C" fn rt_fmod(a: f64, b: f64) -> f64 {
     a % b
 }
@@ -355,12 +384,14 @@ pub struct JsArray {
     pub elements: Vec<f64>,
 }
 
+#[no_mangle]
 pub extern "C" fn rt_alloc_array(capacity: usize) -> *mut JsArray {
     Box::into_raw(Box::new(JsArray {
         elements: Vec::with_capacity(capacity),
     }))
 }
 
+#[no_mangle]
 pub extern "C" fn rt_array_push(arr: *mut JsArray, val: f64) {
     if !arr.is_null() {
         unsafe {
@@ -369,6 +400,7 @@ pub extern "C" fn rt_array_push(arr: *mut JsArray, val: f64) {
     }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_array_get(arr: *const JsArray, index: f64) -> f64 {
     if !arr.is_null() && index >= 0.0 {
         let i = index as usize;
@@ -382,6 +414,7 @@ pub extern "C" fn rt_array_get(arr: *const JsArray, index: f64) -> f64 {
     f64::NAN
 }
 
+#[no_mangle]
 pub extern "C" fn rt_array_set(arr: *mut JsArray, index: f64, val: f64) {
     if !arr.is_null() && index >= 0.0 {
         let i = index as usize;
@@ -396,6 +429,7 @@ pub extern "C" fn rt_array_set(arr: *mut JsArray, index: f64, val: f64) {
     }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_array_len(arr: *const JsArray) -> f64 {
     if arr.is_null() {
         0.0
@@ -410,6 +444,7 @@ pub struct JsObject {
     pub obj_props: std::collections::HashMap<String, *mut JsObject>,
 }
 
+#[no_mangle]
 pub extern "C" fn rt_alloc_obj() -> *mut JsObject {
     Box::into_raw(Box::new(JsObject {
         num_props: std::collections::HashMap::new(),
@@ -418,6 +453,7 @@ pub extern "C" fn rt_alloc_obj() -> *mut JsObject {
     }))
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_set_num(obj: *mut JsObject, key: *const JsString, val: f64) {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {
@@ -430,6 +466,7 @@ pub extern "C" fn rt_obj_set_num(obj: *mut JsObject, key: *const JsString, val: 
     }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_get_num(obj: *const JsObject, key: *const JsString) -> f64 {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {
@@ -445,6 +482,7 @@ pub extern "C" fn rt_obj_get_num(obj: *const JsObject, key: *const JsString) -> 
     f64::NAN
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_set_str(obj: *mut JsObject, key: *const JsString, val: *mut JsString) {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {
@@ -457,6 +495,7 @@ pub extern "C" fn rt_obj_set_str(obj: *mut JsObject, key: *const JsString, val: 
     }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_get_str(obj: *const JsObject, key: *const JsString) -> *mut JsString {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {
@@ -472,6 +511,7 @@ pub extern "C" fn rt_obj_get_str(obj: *const JsObject, key: *const JsString) -> 
     std::ptr::null_mut()
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_set_obj(obj: *mut JsObject, key: *const JsString, val: *mut JsObject) {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {
@@ -484,6 +524,7 @@ pub extern "C" fn rt_obj_set_obj(obj: *mut JsObject, key: *const JsString, val: 
     }
 }
 
+#[no_mangle]
 pub extern "C" fn rt_obj_get_obj(obj: *const JsObject, key: *const JsString) -> *mut JsObject {
     if !obj.is_null() && !key.is_null() {
         let k = unsafe {

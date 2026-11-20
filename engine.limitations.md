@@ -1,7 +1,65 @@
 # Engine Limitations Report
-> Generated: 2026-11-13 | Binary: `/home/nishu/.local/bin/engine` (milestone 2.3)  
-> Full test suite: **106 unit & integration tests, 0 failures** ✅  
-> Working limitation probes: **7/18 pass** ✅ | **11/18 rejected cleanly ("reject, never miscompile")** 🛡️  
+> Generated: 2026-11-13 | Binary: `target/debug/engine` (version 3.0.0)  
+> Full test suite: **165 unit & integration tests, 0 failures** ✅  
+> Native subset probes: **7/18 pass** ✅ | **11/18 rejected cleanly ("reject, never miscompile")** 🛡️  
+> The default CLI now executes valid programs outside the native subset through a compatibility runtime. Use `--native` to see the raw native rejection.
+
+---
+
+## ⚠️ Two Execution Paths
+
+The native Cranelift pipeline is the primary engine and follows the **"reject, never
+miscompile"** rule: every unsupported feature below is a precise compile-time error.
+
+`engine run <file>` adds an interim compatibility fallback:
+
+1. If the native frontend accepts the program, it is compiled and executed natively.
+2. If the native frontend rejects it, the source is erased with SWC (TypeScript/JSX) and
+   executed with Boa. This is why the two full feature-tour programs
+   (`testCaseJs.js`, `testCaseTs.ts`) now exit 0.
+3. `--native` disables the fallback and restores strict rejection. `--compat` forces the
+   fallback directly.
+
+The fallback is **not** the 3.0 dynamic runtime. It is a self-contained compatibility path
+with its own limits: there is no import map, TypeScript is not type-checked, and
+`document`/`React` are stubs for JSX. Relative and absolute ESM file imports work, as do
+bare package specifiers resolved through `node_modules` (`main`/`exports` including
+subpath keys and wildcards, scoped packages, `import`/`require` conditions) and Common
+Node built-ins (`path`, `fs`, `os`, `util`, `assert`, `events`, `url`, `querystring`,
+`buffer`, `process`, `stream`, `crypto`, `module`, `tty`, `worker_threads`, `fs/promises`
+and capability-detection shims). TypeScript `compilerOptions.paths`
+aliases from the nearest `tsconfig.json` (JSONC, `baseUrl`) are resolved before
+`node_modules`. Named and namespace ESM imports from CommonJS expose both statically
+found and live runtime exports. `URL`, `URLSearchParams`, `escape`, `unescape`, `fetch`,
+`Headers`, `Response` and `Buffer` are globals; `fetch` is backed by `curl`. Style imports
+load as empty modules, and empty build-time-only packages with a `.d.ts` get stub exports.
+`require()` of a synchronous ES module exposes its namespace. `String#substr` is polyfilled
+and Boa's stack/recursion limits are raised for large graphs. CommonJS supports `require`
+of `.js`/`.cjs`/`.json`/TS/JSX files, directory
+resolution, a shared module cache, `module.exports`, `exports`, `__filename`,
+`__dirname`, and `require.resolve`. `setTimeout`, `setInterval`, `setImmediate`,
+`queueMicrotask`, `process`, and `performance.now` exist, but timers are a small macrotask
+queue rather than a complete Node event loop. There is no import map, no TypeScript type
+checking. Unknown `node:` built-ins resolve to a universal no-op proxy, so new built-ins
+need no code; semantically important APIs (`Buffer`, `URL`, `fs`, `events`, `stream`, `http`,
+`util`, ...) have real shims. The Fastify backend test `t.ts` and the self-contained tests
+in `tests/backend/` pass in both TS and JS. Framework-specific rendering (Next server
+components, font loaders backed by empty stub packages) is not emulated. The native
+limitations below still describe the engine's own feature surface.
+
+## 🖥️ CLI surface
+
+Bare `engine <file>` is the same as `engine run <file>`. `engine node ...` and
+`engine bun ...` are aliases for the same routing. The binary also provides `test`, `repl`,
+`check`/`-c`, `inspect`, `build`, `init`, `install bun`, `x`/`bunx`, `exec`, `create`,
+`upgrade`, the package-manager subcommands (`install`, `add`, `remove`, `update`, `audit`,
+`dedupe`, `prune`, `outdated`, `link`, `unlink`, `pm`, `publish`), `--test`, and
+`--version`/`--revision`/`--help`.
+
+Package-management and bundling commands delegate to Bun when it is installed, with
+npm/npx fallbacks. `ENGINE_NO_DELEGATE=1` disables delegation. `engine install bun` is
+implemented by this binary (official installer via `curl`/`wget`, PowerShell on Windows,
+plus `--npm`, `--force`, `--version`, and `--dry-run`).
 
 ---
 
@@ -44,18 +102,18 @@
 | **`Math.sqrt` & `Math.abs`** | Native JIT SIMD `Math.sqrt(x)`, `Math.abs(x)` | ✅ **NEW in M2.3** |
 | **Destructuring assignment** | `let [a, b, c] = [1, 2, 3];`, `let { x, y } = point;` | ✅ **NEW in M2.3** |
 | **Parameter destructuring** | `function coords({ x, y }) { ... }` | ✅ **NEW in M2.3** |
-| **`export` / `import` headers** | `export const x = 1;` | ✅ |
+| **`export` / `import` headers** | `export const x = 1;` | ✅ parsed/skipped (native has no module system; the fallback executes modules) |
 | JIT compilation (Cranelift) | Native x86-64 machine code | ✅ |
 | IR interpreter fallback | `--interp` flag | ✅ |
 | Constant folding / DCE optimizer | `--no-opt` to disable | ✅ |
-| Multi-thread runner | `--threads N` | ✅ |
+| Multi-thread runner | `--threads N` | ⚠️ parsed but currently unused |
 
 ---
 
 ## 🚫 Current Limitations (Rejects Safely — Never Miscompiles)
 
 > [!IMPORTANT]
-> The engine follows the **"reject, never miscompile"** principle. Every unsupported feature produces a precise compile-time error with file/line/column pointing to the exact problem. No silent wrong output.
+> The native pipeline follows the **"reject, never miscompile"** principle. Every unsupported feature produces a precise compile-time error with file/line/column pointing to the exact problem. No silent wrong output. The default CLI may then execute the same valid program through the compatibility runtime; pass `--native` to require a native rejection.
 
 ### 1. Closures / First-Class Functions
 ```js
@@ -169,9 +227,22 @@ function sum(...args) { }     // error: expected an identifier, found '.'
 
 ---
 
+### 12. Dynamic `import()` / `import.meta` (native)
+```js
+import("./dep.js").then(...);  // error: dynamic import is not supported by the native pipeline
+import.meta.url;               // error: import.meta is not supported by the native pipeline
+```
+**Root cause:** The native pipeline has no module system or module loader. Statements
+beginning with `import` used to be skipped as module headers, which silently dropped these
+expressions; they are now rejected so the default CLI falls back to the compatibility
+runtime and `--native` fails with a targeted diagnostic.  
+**Planned:** Milestone 4+ (native module system), or run such programs through the fallback.
+
+---
+
 ## Summary Table
 
-| # | Category | Error Produced | Milestone |
+| # | Category | Error Produced by the Native Pipeline | Milestone |
 |---|---|---|---|
 | 1 | Closures / function values | `expected an expression, found 'function'` | M3 |
 | 2 | Arrow functions | `expected ')', found ','` | M3 |
@@ -184,6 +255,9 @@ function sum(...args) { }     // error: expected an identifier, found '.'
 | 9 | Regular expressions | `unexpected character` | M3 |
 | 10 | Mixed arithmetic coercion | `operand must be number, found string` | M4+ |
 | 11 | Spread / rest `...` | `expected an identifier, found '.'` | M3 |
+| 12 | BigInt literals | `BigInt literals are not supported by the native pipeline (the compatibility runtime supports them)` | 3.0 compatibility fallback |
+| 13 | Private class fields / methods | `private class fields and methods ('#name') are not supported by the native pipeline (the compatibility runtime supports them)` | 3.0 compatibility fallback |
+| 14 | Dynamic import / `import.meta` | `dynamic import is not supported by the native pipeline` / `import.meta is not supported by the native pipeline` | 3.0 compatibility fallback |
 
 ---
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run all limitation tests against the engine and report results
-ENGINE=/home/nishu/.local/bin/engine
-DIR=/home/nishu/Techstack/codes/engine/examples/limitations
+# Run all limitation tests against the orb and report results
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ENGINE="${ENGINE:-$ROOT/target/release/orb}"
+DIR="$ROOT/examples/limitations"
 
 PASS=0
 FAIL=0

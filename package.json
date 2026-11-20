@@ -1,0 +1,11 @@
+{
+  "name": "orbyte",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "module": "index.ts",
+  "scripts": {
+    "start": "orb run index.ts",
+    "test": "orb test"
+  }
+}

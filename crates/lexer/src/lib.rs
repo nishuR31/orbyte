@@ -192,6 +192,15 @@ fn is_ident_part_unicode(ch: char) -> bool {
     ch == '$' || unicode_ident::is_xid_continue(ch)
 }
 
+/// The native IR has no BigInt value type. Reject the literal with an
+/// actionable message instead of failing later with "identifier after number".
+fn bigint_diagnostic(start: usize, end: usize) -> Diagnostic {
+    Diagnostic::new(
+        "BigInt literals are not supported by the native pipeline (the compatibility runtime supports them)",
+        Span::new(start, end),
+    )
+}
+
 fn keyword(text: &str) -> Option<TokenKind> {
     Some(match text {
         "function" => TokenKind::Function,
@@ -303,6 +312,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                                     Span::new(start, i),
                                 ));
                             }
+                            if b.get(i) == Some(&b'n') {
+                                return Err(bigint_diagnostic(start, i + 1));
+                            }
                             let value = u64::from_str_radix(&clean, 16).map_err(|_| {
                                 Diagnostic::new("invalid hex literal", Span::new(start, i))
                             })? as f64;
@@ -337,6 +349,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                                     Span::new(start, i),
                                 ));
                             }
+                            if b.get(i) == Some(&b'n') {
+                                return Err(bigint_diagnostic(start, i + 1));
+                            }
                             let value = u64::from_str_radix(&clean, 2).map_err(|_| {
                                 Diagnostic::new("invalid binary literal", Span::new(start, i))
                             })? as f64;
@@ -370,6 +385,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                                     "numeric separator cannot appear here",
                                     Span::new(start, i),
                                 ));
+                            }
+                            if b.get(i) == Some(&b'n') {
+                                return Err(bigint_diagnostic(start, i + 1));
                             }
                             let value = u64::from_str_radix(&clean, 8).map_err(|_| {
                                 Diagnostic::new("invalid octal literal", Span::new(start, i))
@@ -412,6 +430,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                             Span::new(start, j),
                         ));
                     }
+                }
+                if i < b.len() && b[i] == b'n' {
+                    return Err(bigint_diagnostic(start, i + 1));
                 }
                 if i < b.len() && is_ident_start(b[i]) {
                     return Err(Diagnostic::new(
@@ -816,6 +837,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>> {
                     }
                     _ => {
                         let ch = src[i..].chars().next().unwrap();
+                        if ch == '#' {
+                            return Err(Diagnostic::new(
+                                "private class fields and methods ('#name') are not supported by the native pipeline (the compatibility runtime supports them)",
+                                Span::new(i, i + ch.len_utf8()),
+                            ));
+                        }
                         return Err(Diagnostic::new(
                             format!("unexpected character '{ch}'"),
                             Span::new(i, i + ch.len_utf8()),
@@ -934,6 +961,21 @@ mod tests {
     fn rejects_unknown_character() {
         let e = tokenize("let x = @;").unwrap_err();
         assert!(e.message.contains("unexpected character '@'"));
+    }
+
+    #[test]
+    fn rejects_bigint_with_a_targeted_diagnostic() {
+        let e = tokenize("let x = 12345678901234567890n;").unwrap_err();
+        assert!(e.message.contains("BigInt literals"), "{}", e.message);
+
+        let e = tokenize("let x = 0xFFn;").unwrap_err();
+        assert!(e.message.contains("BigInt literals"), "{}", e.message);
+    }
+
+    #[test]
+    fn rejects_private_names_with_a_targeted_diagnostic() {
+        let e = tokenize("class C { #balance = 0; }").unwrap_err();
+        assert!(e.message.contains("private class fields"), "{}", e.message);
     }
 
     #[test]

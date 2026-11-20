@@ -5,11 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "engine"
+name = "orb"
 path = "src/main.rs"
 
 [dependencies]
+diagnostics.workspace = true
+serde_json.workspace = true
 compiler.workspace = true
+compat.workspace = true
+typecheck.workspace = true
 ir.workspace = true
 runtime.workspace = true
 backend-cranelift.workspace = true
@@ -23,3 +27,11 @@ optimizer.workspace = true
 name = "components_bench"
 path = "../benches/components_bench.rs"
 harness = false
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+] }

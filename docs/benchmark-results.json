@@ -1,0 +1,57 @@
+{
+  "workload": "fib(25) + console.log, fresh process per run",
+  "machine": "local development machine, Linux x86_64",
+  "runs": 50,
+  "results": [
+    {
+      "runner": "orb AOT binary",
+      "median_ms": 1.897,
+      "min_ms": 1.793,
+      "runs": 50
+    },
+    {
+      "runner": "orb JIT (--native)",
+      "median_ms": 4.079,
+      "min_ms": 3.956,
+      "runs": 50
+    },
+    {
+      "runner": "orb compat (--compat)",
+      "median_ms": 80.901,
+      "min_ms": 78.233,
+      "runs": 50
+    },
+    {
+      "runner": "bun",
+      "median_ms": 8.164,
+      "min_ms": 7.942,
+      "runs": 50
+    },
+    {
+      "runner": "deno (--no-check)",
+      "median_ms": 21.479,
+      "min_ms": 20.812,
+      "runs": 50
+    },
+    {
+      "runner": "node",
+      "median_ms": 44.228,
+      "min_ms": 40.334,
+      "runs": 50
+    }
+  ],
+  "typechecks": [
+    {
+      "runner": "tsgo --noEmit (type check)",
+      "median_ms": 123.601,
+      "min_ms": 115.749,
+      "runs": 50
+    },
+    {
+      "runner": "tsz --noEmit (type check)",
+      "median_ms": 39.608,
+      "min_ms": 39.115,
+      "runs": 50
+    }
+  ]
+}

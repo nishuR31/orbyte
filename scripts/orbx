@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# orbx - always run the orb binary built from this checkout.
+#
+# A stale copy of `orb` may be installed on PATH. orbx removes the guesswork:
+# it execs the binary from target/<profile> in this checkout, builds it on first
+# use, and honours the same flags as the underlying CLI.
+#
+# Environment:
+#   ORB_ROOT        checkout to use (default: parent directory of this script)
+#   ORB_BIN         exec this binary directly, skipping checkout lookup/build
+#   ORBX_REBUILD=1  run `cargo build --release` before exec
+
+set -euo pipefail
+
+# Resolve the real script path so a symlink on PATH still finds the checkout.
+script="${BASH_SOURCE[0]}"
+while [[ -L "$script" ]]; do
+  link_dir="$(cd -P "$(dirname "$script")" && pwd)"
+  script="$(readlink "$script")"
+  [[ "$script" != /* ]] && script="$link_dir/$script"
+done
+root="${ORB_ROOT:-$(cd -P "$(dirname "$script")/.." && pwd)}"
+
+if [[ -n "${ORB_BIN:-}" ]]; then
+  exec "$ORB_BIN" "$@"
+fi
+
+find_binary() {
+  local profile="$1"
+  local candidate
+  for candidate in \
+    "$root/target/$profile/orb" \
+    "$root/target/$profile/orb.exe"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+bin="$(find_binary release || find_binary debug || true)"
+if [[ -z "$bin" ]]; then
+  echo "orbx: no built binary under $root/target; building release..." >&2
+  cargo build --release --manifest-path "$root/Cargo.toml"
+  bin="$(find_binary release)"
+fi
+
+if [[ "${ORBX_REBUILD:-0}" == "1" ]]; then
+  cargo build --release --manifest-path "$root/Cargo.toml"
+  bin="$(find_binary release)"
+fi
+
+exec "$bin" "$@"

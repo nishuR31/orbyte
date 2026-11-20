@@ -1,20 +1,68 @@
-use std::io::Write;
-use std::path::Path;
 use std::process;
-use std::{env, fs};
 
-const USAGE: &str = "\
-engine - a native JavaScript/TypeScript execution engine (milestone 2.1)
+mod envfile;
+mod execute;
+mod package;
+mod testrunner;
+mod util;
+mod update;
+mod typecheck;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub(crate) const USAGE: &str = "\
+orb - the native JavaScript/TypeScript runtime from orbyte (version 3.0.0)
 
 USAGE:
-    engine run <file.js> [FLAGS]                 compile to machine code and run
-    engine inspect <file.js> [--no-opt]          print the generated IR
-    engine help
+    orb [file] [args...]                 run a file (Node/Bun-shaped surface)
+    orb run <file|script> [args...]      run a file or a package.json script
+    orb run -e <code>                    evaluate JavaScript/TypeScript
+    orb run -p <code>                    evaluate and print the result
+    orb test [filter...]                 run *.test.* / *.spec.* files
+    orb repl                             start an interactive session
+    orb check <file>                     parse without executing (-c)
+    orb inspect <file> [--no-opt]        print the generated native IR
+    orb build [args...]                  bundle (delegated to Bun)
+    orb build --native <file> [-o out]   compile a standalone native executable
+    orb init [-y]                        create package.json / index.ts
+    orb install bun [--force]            install Bun (extra command)
+    orb install|add|remove|update ...    package management (delegated)
+    orb x <package> [args...]            execute a package binary (delegated)
+    orb create|link|unlink|pm ...        Bun package commands (delegated)
+    orb upgrade                          install/upgrade Bun
+    orb self-update [--check]            update orb to the latest release
+    orb typecheck <file.ts>              type-check with embedded tsz
+    orb --version | --revision | --help
 
-FLAGS:
-    --interp         run with the reference IR interpreter instead of the Cranelift JIT
-    --no-opt         skip the IR optimiser (constant folding, dead-code and unreachable-block removal)
-    --threads <N>    number of worker threads for parallel runtime jobs (default: 1)
+ENGINE FLAGS:
+    --interp         run with the reference IR interpreter instead of Cranelift
+    --no-opt         skip the IR optimiser
+    --threads <N>    worker threads for parallel runtime jobs (default: 1)
+    --native         disable the compatibility fallback; fail outside the native subset
+    --compat         force the embedded compatibility runtime (Boa + SWC)
+    --watch, --hot   re-run when files change
+    --env-file <f>   load environment variables from <f> (repeatable)
+    --no-env-file    disable automatic .env loading
+    --input-type <t> auto | module | commonjs
+    --cwd <dir>      resolve files relative to <dir>
+    --preload <f>    evaluate <f> before the entry (repeatable)
+    --               everything after this belongs to the program
+
+TEST FLAGS:
+    --bail           stop scheduling files after the first failure
+    --concurrency <N> parallel test files
+    --test-name-pattern <text>  only report tests whose names contain <text>
+    --watch, --hot   re-run when test files change
+
+By default `run` tries the native pipeline first and falls back to the
+compatibility runtime when the program is outside the native subset. TypeScript,
+JSX, ES modules, BigInt, private fields, async functions, and CommonJS are served
+by the compatibility runtime. Relative files, bare packages in `node_modules`,
+TypeScript `paths` aliases, and Node built-ins are resolved; missing specifiers
+get a clear error. `orb test` runs the in-process harness (not Bun).
+Package-management and bundling commands are delegated to Bun when available;
+`orb install bun` is implemented by this binary.
+Supported extensions: .js .mjs .cjs .jsx .ts .mts .cts .tsx
 ";
 
 fn main() {
@@ -22,139 +70,65 @@ fn main() {
 }
 
 fn real_main() -> i32 {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let Some(cmd) = args.first().map(String::as_str) else {
-        eprint!("{USAGE}");
-        return 2;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    route(&args)
+}
+
+fn route(args: &[String]) -> i32 {
+    let Some(command) = args.first().map(String::as_str) else {
+        return execute::run_stdin_or_repl(&[]);
     };
-    match cmd {
-        "run" | "inspect" => {}
-        "help" | "-h" | "--help" => {
+
+    match command {
+        // `orb node ...` and `orb bun ...` run the same surface. They are
+        // aliases, not emulations of the other binaries.
+        "node" | "bun" => route(&args[1..]),
+        "run" => execute::command_run(&args[1..]),
+        "inspect" => execute::command_inspect(&args[1..]),
+        "test" => testrunner::command_test(&args[1..]),
+        "repl" => execute::command_repl(&args[1..]),
+        "check" => execute::command_check(&args[1..]),
+        "build" => package::command_build(&args[1..]),
+        "init" => package::command_init(&args[1..]),
+        "upgrade" => package::command_upgrade(&args[1..]),
+        "self-update" => update::command_self_update(&args[1..]),
+        "typecheck" => typecheck::command_typecheck(&args[1..]),
+        "exec" => package::command_exec(&args[1..]),
+        "x" | "bunx" => package::command_x(&args[1..]),
+        "install" | "i" => {
+            if args.get(1).map(String::as_str) == Some("bun") {
+                package::command_install_bun(&args[2..])
+            } else {
+                package::delegate("install", &args[1..])
+            }
+        }
+        "add" | "a" => package::delegate("add", &args[1..]),
+        "remove" | "rm" => package::delegate("remove", &args[1..]),
+        "update" => package::delegate("update", &args[1..]),
+        "audit" => package::delegate("audit", &args[1..]),
+        "dedupe" => package::delegate("dedupe", &args[1..]),
+        "prune" => package::delegate("prune", &args[1..]),
+        "outdated" => package::delegate("outdated", &args[1..]),
+        "link" => package::delegate("link", &args[1..]),
+        "unlink" => package::delegate("unlink", &args[1..]),
+        "pm" => package::delegate("pm", &args[1..]),
+        "publish" => package::delegate("publish", &args[1..]),
+        "create" | "c" => package::command_create(&args[1..]),
+        "help" | "--help" | "-h" => {
             print!("{USAGE}");
-            return 0;
+            0
         }
-        other => {
-            eprintln!("unknown command '{other}'\n");
-            eprint!("{USAGE}");
-            return 2;
+        "--version" | "-v" | "-V" => {
+            println!("{VERSION}");
+            0
         }
-    }
-
-    let mut path: Option<&str> = None;
-    let mut interp = false;
-    let mut optimize = true;
-    let mut threads: usize = 1;
-
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "--interp" {
-            interp = true;
-        } else if arg == "--no-opt" {
-            optimize = false;
-        } else if arg == "--threads" || arg == "-t" {
-            i += 1;
-            if i >= args.len() {
-                eprintln!("error: --threads requires an argument");
-                return 2;
-            }
-            threads = match args[i].parse::<usize>() {
-                Ok(n) if n > 0 => n,
-                _ => {
-                    eprintln!("error: --threads must be a positive integer");
-                    return 2;
-                }
-            };
-        } else if let Some(n_str) = arg.strip_prefix("--threads=") {
-            threads = match n_str.parse::<usize>() {
-                Ok(n) if n > 0 => n,
-                _ => {
-                    eprintln!("error: --threads must be a positive integer");
-                    return 2;
-                }
-            };
-        } else if arg.starts_with("--") {
-            eprintln!("unknown flag '{arg}'");
-            return 2;
-        } else {
-            if path.is_some() {
-                eprintln!("expected exactly one input file");
-                return 2;
-            }
-            path = Some(arg.as_str());
+        "--revision" => {
+            println!("{VERSION}");
+            0
         }
-        i += 1;
-    }
-    let Some(path) = path else {
-        eprintln!("missing input file\n");
-        eprint!("{USAGE}");
-        return 2;
-    };
-
-    match Path::new(path).extension().and_then(|e| e.to_str()) {
-        Some("js") | Some("mjs") | Some("cjs") | Some("ts") | Some("mts") | Some("cts") => {}
-        _ => {
-            eprintln!("error: supported file extensions are .js, .mjs, .cjs, .ts, .mts, .cts");
-            return 1;
-        }
-    }
-
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read '{path}': {e}");
-            return 1;
-        }
-    };
-
-    let compiled = if optimize {
-        compiler::compile_optimized(&source)
-    } else {
-        compiler::compile_to_ir(&source)
-    };
-    let module = match compiled {
-        Ok(m) => m,
-        Err(d) => {
-            eprintln!("{}", d.render(path, &source));
-            return 1;
-        }
-    };
-
-    if cmd == "inspect" {
-        print!("{module}");
-        return 0;
-    }
-
-    let _ = threads; // worker threads for runtime thread pool configuration
-
-    if interp {
-        let stdout = std::io::stdout();
-        let mut out = stdout.lock();
-        let result = runtime::interp::run(&module, &mut out);
-        let _ = out.flush();
-        if let Err(e) = result {
-            // Both execution engines report runtime failures the same way.
-            eprintln!("{e}");
-            return 1;
-        }
-        return 0;
-    }
-
-    match backend_cranelift::compile(&module) {
-        Ok(compiled) => {
-            let result = compiled.run();
-            let _ = std::io::stdout().flush();
-            match result {
-                Ok(()) => 0,
-                Err(e) => {
-                    eprintln!("{e}");
-                    1
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("error: native code generation failed: {e}");
-            1
-        }
+        "--test" => testrunner::command_test(&args[1..]),
+        _ if command.starts_with("--test-") => testrunner::command_test(args),
+        _ if command.starts_with('-') => execute::command_run(args),
+        _ => execute::command_run(args),
     }
 }

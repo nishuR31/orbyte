@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orbyte — a JavaScript runtime with native output</title>
+<meta name="description" content="orbyte is a Rust-powered JavaScript/TypeScript runtime with a Cranelift JIT, a standalone AOT compiler, and a Node/Bun-shaped CLI.">
+<style>
+  :root {
+    --bg: #0a0d12;
+    --panel: #11161e;
+    --panel-2: #151c26;
+    --line: #232d3b;
+    --text: #e6edf3;
+    --muted: #9aa9bb;
+    --mint: #6ee7b7;
+    --blue: #78b7ff;
+    --amber: #f5c26b;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10, 13, 18, .88); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav { display: flex; align-items: center; gap: 1.5rem; height: 64px; }
+  .brand { display: flex; align-items: center; gap: .6rem; font-weight: 700; font-size: 1.05rem; letter-spacing: -.02em; }
+  .brand svg { width: 26px; height: 26px; }
+  .nav-links { display: flex; gap: 1.25rem; margin-left: auto; flex-wrap: wrap; font-size: .9rem; }
+  .nav-links a { color: var(--muted); }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+  .hero { padding: 6rem 0 4rem; border-bottom: 1px solid var(--line); }
+  .eyebrow { font-family: var(--mono); font-size: .78rem; color: var(--mint); letter-spacing: .14em; text-transform: uppercase; }
+  h1 { font-size: clamp(3rem, 9vw, 6rem); line-height: .98; letter-spacing: -.05em; margin: 1rem 0 1.2rem; }
+  h1 span { color: var(--mint); }
+  .lede { font-size: clamp(1.05rem, 2.2vw, 1.35rem); color: var(--muted); max-width: 46rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 2rem; }
+  .btn {
+    display: inline-flex; align-items: center; gap: .5rem;
+    padding: .7rem 1.15rem; border-radius: 8px; font-weight: 600; font-size: .92rem;
+    border: 1px solid var(--line); color: var(--text); background: var(--panel-2);
+  }
+  .btn:hover { text-decoration: none; border-color: var(--mint); }
+  .btn.primary { background: var(--mint); color: #06231a; border-color: var(--mint); }
+  .stats { display: flex; flex-wrap: wrap; gap: 2.5rem; margin-top: 3.5rem; }
+  .stat b { display: block; font-size: 1.8rem; letter-spacing: -.03em; }
+  .stat span { color: var(--muted); font-size: .82rem; font-family: var(--mono); }
+
+  section { padding: 4.5rem 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: clamp(1.7rem, 4vw, 2.4rem); letter-spacing: -.035em; margin: 0 0 .5rem; }
+  .sub { color: var(--muted); max-width: 48rem; margin: 0 0 2rem; }
+  .grid { display: grid; gap: 1rem; }
+  .cards-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .cards-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.4rem;
+  }
+  .card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .92rem; }
+  .card .tag { font-family: var(--mono); font-size: .72rem; color: var(--mint); }
+
+  .platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .75rem; }
+  .platform {
+    display: flex; flex-direction: column; gap: .3rem; padding: 1rem 1.1rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .platform:hover { border-color: var(--mint); text-decoration: none; }
+  .platform b { font-size: .98rem; }
+  .platform code { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+
+  .code {
+    position: relative; background: #070a0e; border: 1px solid var(--line);
+    border-radius: 10px; padding: 1.1rem 1.2rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .84rem; color: #cfe3f7;
+  }
+  .code .prompt { color: var(--mint); user-select: none; }
+  .copy {
+    position: absolute; top: .55rem; right: .55rem; font-family: var(--mono); font-size: .7rem;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: .25rem .5rem; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--mint); }
+
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1.4rem; }
+  .chart h3 { margin: 0 0 .2rem; font-size: 1rem; }
+  .chart .note { color: var(--muted); font-size: .8rem; margin-bottom: 1.2rem; }
+  .row { margin: .9rem 0; }
+  .row .label { display: flex; justify-content: space-between; font-size: .82rem; margin-bottom: .35rem; }
+  .row .label span { font-family: var(--mono); color: var(--muted); }
+  .track { height: 12px; background: #0a0f16; border-radius: 6px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 6px; }
+  .bar.jit { background: var(--blue); }
+  .bar.aot { background: var(--mint); }
+  .bar.other { background: #4b5a70; }
+  .bar.compat { background: var(--amber); }
+  .legend { display: flex; gap: 1.2rem; font-family: var(--mono); font-size: .75rem; color: var(--muted); margin-top: 1.2rem; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .35rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { text-align: left; padding: .7rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; }
+  td code { font-family: var(--mono); font-size: .8rem; color: var(--mint); }
+
+  .limits li { margin: .55rem 0; color: var(--muted); }
+  .limits li b { color: var(--text); }
+  footer { padding: 2.5rem 0; color: var(--muted); font-size: .85rem; }
+  .foot { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; }
+  @media (max-width: 640px) {
+    .nav-links { display: none; }
+    .stats { gap: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top" aria-label="orbyte home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="28" height="28" rx="7" stroke="#6ee7b7" stroke-width="2"/>
+        <circle cx="16" cy="16" r="6" stroke="#78b7ff" stroke-width="2"/>
+        <circle cx="16" cy="16" r="2" fill="#6ee7b7"/>
+      </svg>
+      orbyte
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="#download">Download</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#features">Features</a>
+      <a href="#limitations">Limitations</a>
+      <a href="#docs">Docs</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <div class="eyebrow">Rust &middot; Cranelift &middot; JavaScript / TypeScript</div>
+    <h1>Run JavaScript.<br><span>Ship machine code.</span></h1>
+    <p class="lede">
+      orbyte is a JavaScript/TypeScript runtime with a native JIT, a compatibility
+      runtime for the rest of the language, and an <code>orb build --native</code> path
+      that emits a standalone executable. One CLI, shaped like Node and Bun.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="#download">Download orb &darr;</a>
+      <a class="btn" href="#docs">Read the docs</a>
+      <a class="btn" href="https://github.com/nishuR31/orbyte">GitHub &nearr;</a>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>2.1&times;</b><span>faster than orb JIT</span></div>
+      <div class="stat"><b>4.3&times;</b><span>faster than bun, measured</span></div>
+      <div class="stat"><b>0</b><span>runtime deps for AOT binaries</span></div>
+    </div>
+  </div>
+
+  <section id="download">
+    <div class="wrap">
+      <h2>Download</h2>
+      <p class="sub">Pick your platform. Each archive contains the <code>orb</code> binary and the runtime
+      static library that <code>orb build --native</code> links against.</p>
+      <div class="platforms">
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-linux-x86_64.tar.gz">
+          <b>Linux x86_64</b><code>orb-linux-x86_64.tar.gz</code></a>
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-linux-aarch64.tar.gz">
+          <b>Linux aarch64</b><code>orb-linux-aarch64.tar.gz</code></a>
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-macos-x86_64.tar.gz">
+          <b>macOS Intel</b><code>orb-macos-x86_64.tar.gz</code></a>
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-macos-aarch64.tar.gz">
+          <b>macOS Apple Silicon</b><code>orb-macos-aarch64.tar.gz</code></a>
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-windows-x86_64.zip">
+          <b>Windows x86_64</b><code>orb-windows-x86_64.zip</code></a>
+        <a class="platform" href="https://github.com/nishuR31/orbyte/releases/latest/download/orb-windows-aarch64.zip">
+          <b>Windows aarch64</b><code>orb-windows-aarch64.zip</code></a>
+      </div>
+      <p class="sub" style="margin-top:1.6rem">Or install with a script (Linux / macOS):</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/nishuR31/orbyte/main/scripts/install.sh | bash">copy</button>
+        <span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/nishuR31/orbyte/main/scripts/install.sh | bash
+      </div>
+      <p class="sub" style="margin-top:.8rem">Windows (PowerShell):</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="irm https://raw.githubusercontent.com/nishuR31/orbyte/main/scripts/install.ps1 | iex">copy</button>
+        <span class="prompt">PS&gt;</span> irm https://raw.githubusercontent.com/nishuR31/orbyte/main/scripts/install.ps1 | iex
+      </div>
+      <p class="sub" style="margin-top:1rem">
+        Already installed? <code>orb self-update --check</code> reports whether a newer
+        release exists; <code>orb self-update</code> replaces the binary in place and keeps
+        the previous one as <code>orb.old</code>. Re-running the install script does the
+        same thing. Updates are explicit &mdash; no background updater, no telemetry.
+      </p>
+      <p class="sub" style="margin-top:1rem">
+        Archives are produced by the release workflow when a <code>v*</code> tag is pushed.
+        Until the first release, build from source with <code>cargo build --release</code>.
+        Verify with <code>orb --version</code>.
+      </p>
+    </div>
+  </section>
+
+  <section id="benchmarks">
+    <div class="wrap">
+      <h2>Benchmarks, measured</h2>
+      <p class="sub">Same workload for every runner: <code>fib(25)</code> printing <code>75025</code>,
+      one fresh process per run. Median of 50 runs on a Linux x86_64 development machine,
+      release builds. Timing includes startup and compilation. Lower is better.</p>
+      <div class="chart">
+        <h3>Startup + execution &mdash; fib(25)</h3>
+        <div class="note">all outputs verified &middot; lower is better &middot; reproducible with the harness below</div>
+        <div class="row"><div class="label"><b>orb AOT binary</b><span>1.897 ms</span></div><div class="track"><div class="bar aot" style="width:2.3%"></div></div></div>
+        <div class="row"><div class="label"><b>orb JIT (--native)</b><span>4.079 ms</span></div><div class="track"><div class="bar jit" style="width:5.0%"></div></div></div>
+        <div class="row"><div class="label"><b>bun</b><span>8.164 ms</span></div><div class="track"><div class="bar other" style="width:10.1%"></div></div></div>
+        <div class="row"><div class="label"><b>deno (--no-check)</b><span>21.479 ms</span></div><div class="track"><div class="bar other" style="width:26.5%"></div></div></div>
+        <div class="row"><div class="label"><b>node</b><span>44.228 ms</span></div><div class="track"><div class="bar other" style="width:54.7%"></div></div></div>
+        <div class="row"><div class="label"><b>orb compat (Boa)</b><span>80.901 ms</span></div><div class="track"><div class="bar compat" style="width:100%"></div></div></div>
+        <div class="legend"><span><i class="dot" style="background:var(--mint)"></i>AOT</span><span><i class="dot" style="background:var(--blue)"></i>JIT</span><span><i class="dot" style="background:#4b5a70"></i>other runtimes</span><span><i class="dot" style="background:var(--amber)"></i>compat fallback</span></div>
+      </div>
+      <div class="grid cards-2" style="margin-top:1rem">
+        <div class="card">
+          <h3>Type checkers &mdash; separate job</h3>
+          <p>Not comparable with execution: orb has no type checker. Isolated config
+          (<code>types: []</code>, <code>skipLibCheck</code>), median of 50 runs.</p>
+          <table style="margin-top:1rem">
+            <thead><tr><th>Checker</th><th>Median</th></tr></thead>
+            <tbody>
+              <tr><td>tsz (tsz-org/tsz)</td><td>39.608 ms</td></tr>
+              <tr><td>tsgo (@typescript/native-preview)</td><td>123.601 ms</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Reproduce it</h3>
+          <p>The harness verifies each runner's output and writes raw numbers to JSON.</p>
+          <div class="code" style="margin-top:1rem">
+            <span class="prompt">$</span> cargo build --release<br>
+            <span class="prompt">$</span> ./target/release/orb build --native benches/cases/fib.js -o benches/cases/fib_native<br>
+            <span class="prompt">$</span> python3 benches/runtime_bench.py --runs 50
+          </div>
+          <p style="margin-top:1rem"><a href="https://github.com/nishuR31/orbyte/blob/main/docs/benchmarks.md">Full methodology and raw results &rarr;</a></p>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h3>Stress run &mdash; 8-way parallel + type checking</h3>
+        <p>160 parallel jobs, zero failures. Median latency: orb AOT 5.00&nbsp;ms,
+        orb JIT 7.58&nbsp;ms, bun 11.44&nbsp;ms, deno 25.20&nbsp;ms, node 47.05&nbsp;ms.
+        Type checking a 16&nbsp;KB TS file: tsz 59.79&nbsp;ms, embedded orb tsz
+        115.06&nbsp;ms, tsgo 445.47&nbsp;ms (same strict config; the remaining gap is
+        integration overhead in the combined executable). See the methodology note for why.</p>
+        <p style="margin-top:1rem"><a href="https://github.com/nishuR31/orbyte/blob/main/docs/stress-benchmarks.md">Stress results and reproduction &rarr;</a></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="sub">The native subset is deliberately small; everything else still runs through the
+      compatibility runtime instead of being miscompiled.</p>
+      <div class="grid cards-3">
+        <div class="card"><span class="tag">native</span><h3>JIT + AOT</h3><p>One IR, two backends: in-memory Cranelift JIT for <code>orb run</code>, relocatable object plus linker for <code>orb build --native</code>.</p></div>
+        <div class="card"><span class="tag">compat</span><h3>JS / TS / JSX</h3><p>SWC erasure and Boa execution cover TypeScript, JSX, ES modules, CommonJS, timers and <code>fetch</code>.</p></div>
+        <div class="card"><span class="tag">cli</span><h3>Node/Bun-shaped</h3><p><code>run</code>, <code>test</code>, <code>repl</code>, <code>inspect</code>, <code>check</code>, package scripts and delegated Bun commands.</p></div>
+        <div class="card"><span class="tag">third-party</span><h3>Type checking</h3><p><code>orb typecheck file.ts</code> runs the vendored <a href="https://github.com/tsz-org/tsz">tsz</a> checker in-process — thanks to its developers. Testing and contributions welcome.</p></div>
+        <div class="card"><span class="tag">standalone</span><h3>No runtime needed</h3><p>AOT output links the Rust runtime statically. The resulting executable needs no Node, Bun or orbyte install.</p></div>
+        <div class="card"><span class="tag">cross-platform</span><h3>Three operating systems</h3><p>CI checks, tests and an AOT smoke test on Linux, macOS and Windows, including ARM targets.</p></div>
+        <div class="card"><span class="tag">safe by default</span><h3>Reject, never miscompile</h3><p>Programs outside the statically typed subset are diagnosed or routed to the compatibility runtime.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="docs">
+    <div class="wrap">
+      <h2>Quick start</h2>
+      <p class="sub">From a source checkout:</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="git clone https://github.com/nishuR31/orbyte.git
+cd orbyte
+cargo build --release
+./target/release/orb build --native examples/javascript/calculate.js -o calculate
+./calculate">copy</button>
+        <span class="prompt">$</span> git clone https://github.com/nishuR31/orbyte.git<br>
+        <span class="prompt">$</span> cd orbyte<br>
+        <span class="prompt">$</span> cargo build --release<br>
+        <span class="prompt">$</span> ./target/release/orb build --native examples/javascript/calculate.js -o calculate<br>
+        <span class="prompt">$</span> ./calculate<br>
+        610
+      </div>
+      <p class="sub" style="margin-top:1.2rem">
+        Full command reference and AOT requirements live in the
+        <a href="https://github.com/nishuR31/orbyte#readme">README</a>. The native subset is enumerated in
+        <a href="https://github.com/nishuR31/orbyte/blob/main/engine.limitations.md">engine.limitations.md</a>.
+      </p>
+    </div>
+  </section>
+
+  <section id="limitations">
+    <div class="wrap">
+      <h2>Limitations</h2>
+      <p class="sub">Where orbyte is today. These are real boundaries, not TODOs hidden in the demo.</p>
+      <ul class="limits">
+        <li><b>AOT covers the native subset only.</b> TypeScript, JSX, ES modules, async and most dynamic JS
+          have no native IR yet. They run through <code>orb run</code> or Bun.</li>
+        <li><b>AOT linking needs a toolchain.</b> <code>cc</code> on Unix or the MSVC linker on Windows,
+          plus the shipped <code>libruntime.a</code> / <code>runtime.lib</code> beside the binary.</li>
+        <li><b>No built-in HTTP server or SQLite.</b> <code>fetch</code> is backed by <code>curl</code>;
+          <code>http.createServer()</code> is not implemented.</li>
+        <li><b>Node built-ins are shims.</b> The <code>path</code> shim uses POSIX semantics on every
+          platform; <code>os.EOL</code> and <code>tmpdir</code> are platform-aware, but full Node parity is not a goal yet.</li>
+        <li><b>Some development scripts need Bash.</b> The <code>tests/</code> and
+          <code>examples/</code> helper scripts are not part of CI; POSIX shell syntax in
+          <code>package.json</code> scripts needs Git Bash on Windows.</li>
+        <li><b>Early project.</b> Version 3.0.0, English-only docs, no stable API guarantees for the
+          embedded compatibility runtime yet.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>orbyte &middot; a native JavaScript/TypeScript runtime</span>
+    <span><a href="https://github.com/nishuR31/orbyte">GitHub</a> &middot;
+      <a href="https://github.com/nishuR31/orbyte/releases">Releases</a> &middot;
+      <a href="https://github.com/nishuR31/orbyte#readme">README</a></span>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('.copy').forEach(function (button) {
+    button.addEventListener('click', function () {
+      navigator.clipboard.writeText(button.dataset.copy).then(function () {
+        var old = button.textContent;
+        button.textContent = 'copied';
+        setTimeout(function () { button.textContent = old; }, 1400);
+      });
+    });
+  });
+</script>
+</body>
+</html>

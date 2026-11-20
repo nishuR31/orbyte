@@ -14,7 +14,7 @@
 use std::fmt;
 
 mod verify;
-pub use verify::verify;
+pub use verify::{verify, verify_function};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {

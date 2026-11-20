@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "types": [],
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "files": ["fib.ts"]
+}

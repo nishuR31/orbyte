@@ -14,7 +14,10 @@
 
 use std::collections::HashMap;
 
-use ir::{BinOp, Block, BlockData, CmpOp, Function, Inst, Local, Module, Terminator, UnOp, Value};
+use ir::{
+    BinOp, Block, BlockData, CmpOp, FuncRef, Function, Inst, Local, Module, Terminator, UnOp,
+    Value,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Const {
@@ -37,13 +40,20 @@ const PASSES: [Pass; 3] = [
 /// surfacing later as a backend or runtime failure. The input must already be
 /// valid IR.
 pub fn optimize(module: &mut Module) -> Result<(), String> {
+    // Drop functions no path from the entry can reach before doing any local
+    // work. The frontend emits one IR function per source function, so a large
+    // program with a small executed subset would otherwise pay for optimising
+    // and machine-code-generating thousands of dead functions.
+    remove_unreachable_functions(module);
     for fi in 0..module.functions.len() {
         for _ in 0..8 {
             let before = module.functions[fi].clone();
             for (name, pass) in PASSES {
                 pass(&mut module.functions[fi]);
                 compact_values(&mut module.functions[fi]);
-                ir::verify(module).map_err(|e| {
+                // Verify only the function we changed: verifying the whole
+                // module here is quadratic in the number of functions.
+                ir::verify_function(module, &module.functions[fi]).map_err(|e| {
                     format!("invalid IR after pass '{name}' on '{}': {e}", module.functions[fi].name)
                 })?;
             }
@@ -52,7 +62,51 @@ pub fn optimize(module: &mut Module) -> Result<(), String> {
             }
         }
     }
+    // One whole-module check at the end keeps the entry-point and call graph
+    // guarantees without paying for them after every local pass.
+    ir::verify(module)?;
     Ok(())
+}
+
+/// Removes functions unreachable from the entry and rewrites call references.
+fn remove_unreachable_functions(module: &mut Module) {
+    let original = std::mem::take(&mut module.functions);
+    let mut stack = vec![module.entry];
+    let mut live = vec![false; original.len()];
+    while let Some(reference) = stack.pop() {
+        let index = reference.0 as usize;
+        if index >= original.len() || live[index] {
+            continue;
+        }
+        live[index] = true;
+        for block in &original[index].blocks {
+            for inst in &block.insts {
+                if let Inst::Call { callee, .. } = inst {
+                    stack.push(*callee);
+                }
+            }
+        }
+    }
+
+    let mut remap = vec![FuncRef(0); original.len()];
+    for (index, function) in original.into_iter().enumerate() {
+        if !live[index] {
+            continue;
+        }
+        remap[index] = FuncRef(module.functions.len() as u32);
+        module.functions.push(function);
+    }
+    let entry = module.entry;
+    module.entry = remap[entry.0 as usize];
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            for inst in &mut block.insts {
+                if let Inst::Call { callee, .. } = inst {
+                    *callee = remap[callee.0 as usize];
+                }
+            }
+        }
+    }
 }
 
 /// The value an instruction defines, pure or not.
@@ -359,7 +413,7 @@ pub fn fold_constants(f: &mut Function) {
 
 fn uses(inst: &Inst, mut visit: impl FnMut(Value)) {
     match inst {
-        Inst::ConstF64 { .. } | Inst::ConstBool { .. } | Inst::ConstStr { .. } | Inst::ObjSetObj { .. } | Inst::ObjGetObj { .. } | Inst::ConstNull { .. } | Inst::GetLocal { .. } => {}
+        Inst::ConstF64 { .. } | Inst::ConstBool { .. } | Inst::ConstStr { .. } | Inst::ConstNull { .. } | Inst::GetLocal { .. } => {}
         Inst::ConcatStr { lhs, rhs, .. } => {
             visit(*lhs);
             visit(*rhs);
@@ -555,5 +609,92 @@ pub fn remove_unreachable_blocks(f: &mut Function) {
             ret @ Terminator::Return(_) => ret,
         });
         f.blocks.push(BlockData { insts: data.insts, terminator: data.terminator });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One function that reads and writes an object with an object-valued key.
+    /// The key string is used only by `obj_get_obj`/`obj_set_obj`, so losing
+    /// those uses would make dead-code elimination delete the key definition.
+    fn object_key_module() -> Module {
+        let block = BlockData {
+            insts: vec![
+                Inst::ConstStr { dst: Value(0), value: "key".to_owned() },
+                Inst::AllocObj { dst: Value(1) },
+                Inst::ObjGetObj { dst: Value(2), obj: Value(1), key: Value(0) },
+                Inst::ObjSetObj { obj: Value(1), key: Value(0), val: Value(2) },
+                Inst::Print { ty: ir::Type::Obj, value: Value(2) },
+                Inst::ConstBool { dst: Value(3), value: false },
+            ],
+            terminator: Some(Terminator::Return(None)),
+        };
+        let function = Function {
+            name: "object_key".to_owned(),
+            params: Vec::new(),
+            ret: None,
+            locals: Vec::new(),
+            blocks: vec![block],
+            value_types: vec![ir::Type::Str, ir::Type::Obj, ir::Type::Obj, ir::Type::Bool],
+        };
+        Module { functions: vec![function], entry: ir::FuncRef(0) }
+    }
+
+    #[test]
+    fn dead_code_keeps_obj_set_and_get_operands() {
+        let mut module = object_key_module();
+        ir::verify(&module).expect("fixture must be valid IR");
+
+        eliminate_dead_code(&mut module.functions[0]);
+        compact_values(&mut module.functions[0]);
+        ir::verify(&module).expect("DCE must not orphan object-key operands");
+
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(insts.iter().any(|inst| matches!(inst, Inst::ConstStr { .. })));
+        assert!(insts.iter().any(|inst| matches!(inst, Inst::ObjGetObj { .. })));
+        assert!(insts.iter().any(|inst| matches!(inst, Inst::ObjSetObj { .. })));
+        // A genuinely unused pure definition is still removed.
+        assert!(!insts.iter().any(|inst| matches!(inst, Inst::ConstBool { .. })));
+    }
+
+    fn empty_function(name: &str) -> Function {
+        Function {
+            name: name.to_owned(),
+            params: Vec::new(),
+            ret: None,
+            locals: Vec::new(),
+            blocks: vec![BlockData {
+                insts: Vec::new(),
+                terminator: Some(Terminator::Return(None)),
+            }],
+            value_types: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unreachable_functions_are_removed_and_calls_remapped() {
+        let mut module = Module {
+            functions: vec![empty_function("entry"), empty_function("dead"), empty_function("callee")],
+            entry: FuncRef(0),
+        };
+        module.functions[0].blocks[0].insts.push(Inst::Call {
+            dst: None,
+            callee: FuncRef(2),
+            args: Vec::new(),
+        });
+        ir::verify(&module).expect("fixture must be valid IR");
+
+        optimize(&mut module).expect("optimisation must preserve valid IR");
+
+        assert_eq!(module.functions.len(), 2);
+        assert_eq!(module.entry, FuncRef(0));
+        assert_eq!(module.functions[0].name, "entry");
+        assert_eq!(module.functions[1].name, "callee");
+        assert!(matches!(
+            &module.functions[0].blocks[0].insts[0],
+            Inst::Call { callee: FuncRef(1), .. }
+        ));
     }
 }

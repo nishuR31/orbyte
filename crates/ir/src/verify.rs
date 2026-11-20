@@ -25,7 +25,11 @@ struct Checker<'a> {
     here: Vec<bool>,
 }
 
-fn verify_function(module: &Module, func: &Function) -> Result<(), String> {
+/// Verifies one function against its module (call signatures need the module).
+///
+/// Exposed so the optimiser can re-verify only the function it just changed
+/// instead of the whole module after every pass.
+pub fn verify_function(module: &Module, func: &Function) -> Result<(), String> {
     if func.blocks.is_empty() {
         return Err("function has no blocks".to_string());
     }

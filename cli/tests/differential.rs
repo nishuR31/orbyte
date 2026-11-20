@@ -1,6 +1,6 @@
 //! Differential test harness.
 //!
-//! Every `examples/javascript/*.js` program is run through the real `engine`
+//! Every `examples/javascript/*.js` program is run through the real `orb`
 //! binary four ways -- JIT and reference interpreter, each with and without the
 //! optimiser -- and all four outputs must agree. If a `<name>.expected` file sits
 //! next to the example, the output must also match it. The `.expected` files are
@@ -14,13 +14,13 @@ fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/javascript")
 }
 
-fn run_engine(file: &Path, flags: &[&str]) -> (String, String, bool) {
-    let out = Command::new(env!("CARGO_BIN_EXE_engine"))
+fn run_orb(file: &Path, flags: &[&str]) -> (String, String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_orb"))
         .arg("run")
         .arg(file)
         .args(flags)
         .output()
-        .expect("failed to launch the engine binary");
+        .expect("failed to launch the orb binary");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -50,27 +50,43 @@ fn every_example_agrees_across_backends_and_optimiser() {
         let expected = fs::read_to_string(file.with_extension("expected")).ok();
 
         let (reference_label, reference_flags) = configs[2];
-        let (reference, stderr, ok) = run_engine(file, reference_flags);
+        let (reference, stderr, ok) = run_orb(file, reference_flags);
         assert!(ok, "{name} failed under {reference_label}: {stderr}");
         if let Some(expected) = &expected {
-            assert_eq!(&reference, expected, "{name}: output differs from the Node.js oracle");
+            assert_eq!(
+                &reference, expected,
+                "{name}: output differs from the Node.js oracle"
+            );
         }
 
         for (label, flags) in configs {
-            let (stdout, stderr, ok) = run_engine(file, flags);
+            let (stdout, stderr, ok) = run_orb(file, flags);
             assert!(ok, "{name} failed under {label}: {stderr}");
-            assert_eq!(stdout, reference, "{name}: `{label}` disagrees with `{reference_label}`");
+            assert_eq!(
+                stdout, reference,
+                "{name}: `{label}` disagrees with `{reference_label}`"
+            );
         }
     }
 }
 
 #[test]
 fn compile_errors_exit_nonzero_with_a_located_message() {
-    let dir = std::env::temp_dir().join(format!("engine-diff-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("orb-diff-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("bad.js");
+    // Valid JavaScript outside the native numeric subset: the compatibility
+    // runtime executes it, while `--native` still rejects it at compile time.
     fs::write(&file, "let x = 1;\nconsole.log(x + true);\n").unwrap();
-    let (stdout, stderr, ok) = run_engine(&file, &[]);
+
+    let (stdout, stderr, ok) = run_orb(&file, &[]);
+    assert!(
+        ok,
+        "compatibility fallback should run the program: {stderr}"
+    );
+    assert_eq!(stdout, "2\n");
+
+    let (stdout, stderr, ok) = run_orb(&file, &["--native"]);
     assert!(!ok);
     assert!(stdout.is_empty());
     assert!(stderr.contains("bad.js:2:"), "{stderr}");
@@ -80,15 +96,22 @@ fn compile_errors_exit_nonzero_with_a_located_message() {
 
 #[test]
 fn runaway_recursion_fails_cleanly_in_both_backends() {
-    let dir = std::env::temp_dir().join(format!("engine-overflow-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("orb-overflow-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("overflow.js");
-    fs::write(&file, "function f(n) { return f(n + 1); }\nconsole.log(f(0));\n").unwrap();
+    fs::write(
+        &file,
+        "function f(n) { return f(n + 1); }\nconsole.log(f(0));\n",
+    )
+    .unwrap();
     for flags in [&[][..], &["--interp"][..]] {
-        let (stdout, stderr, ok) = run_engine(&file, flags);
+        let (stdout, stderr, ok) = run_orb(&file, flags);
         assert!(!ok, "expected a non-zero exit with {flags:?}");
         assert!(stdout.is_empty());
-        assert!(stderr.contains("Maximum call stack size exceeded"), "{flags:?}: {stderr}");
+        assert!(
+            stderr.contains("Maximum call stack size exceeded"),
+            "{flags:?}: {stderr}"
+        );
     }
     let _ = fs::remove_dir_all(&dir);
 }

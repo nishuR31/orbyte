@@ -1,5 +1,9 @@
-//! Cranelift JIT backend: lowers the architecture-independent IR to machine
-//! code in memory and runs it on the host CPU.
+//! Cranelift backend: lowers the architecture-independent IR to machine code.
+//!
+//! Two output modes share the same lowering:
+//!   * [`compile`] - JIT code in memory, run through [`CompiledModule::run`].
+//!   * [`compile_object`] - a relocatable object with a C `main`, linked by
+//!     [`link_executable`] into a standalone native executable.
 //!
 //! Type mapping: `F64` -> `f64`, `Bool` -> `i8` (0 or 1).
 //! IR locals become Cranelift `Variable`s; Cranelift's frontend performs the
@@ -21,14 +25,24 @@
 //! through JIT frames is not possible). `run` converts the flag into a
 //! `RuntimeError`; nothing here ever terminates the host process.
 //!
-//! Runtime helpers are plain Rust `extern "C"` functions.
+//! Runtime helpers are plain Rust `#[no_mangle] extern "C"` functions so they
+//! can be resolved both by the JIT symbol map and by the system linker.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{self as clif, types, AbiParam, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{
+    self as clif, types, AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
+};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module as ClifModule};
+use cranelift_module::{
+    default_libcall_names, DataDescription, FuncId, Linkage, Module as ClifModule,
+};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use ir::{BinOp, CmpOp, Inst, Terminator, Type, UnOp};
 use runtime::{ExecContext, RuntimeError};
 
@@ -63,8 +77,12 @@ fn clif_type(t: Type) -> clif::Type {
     }
 }
 
-fn make_sig(jit: &JITModule, params: &[clif::Type], ret: Option<clif::Type>) -> clif::Signature {
-    let mut sig = jit.make_signature();
+fn make_sig<M: ClifModule>(
+    module: &M,
+    params: &[clif::Type],
+    ret: Option<clif::Type>,
+) -> clif::Signature {
+    let mut sig = module.make_signature();
     for p in params {
         sig.params.push(AbiParam::new(*p));
     }
@@ -72,6 +90,65 @@ fn make_sig(jit: &JITModule, params: &[clif::Type], ret: Option<clif::Type>) -> 
         sig.returns.push(AbiParam::new(r));
     }
     sig
+}
+
+/// Everything the shared lowering produces, independent of the output module.
+struct Emitted {
+    ids: Vec<FuncId>,
+}
+
+fn target_isa(pic: bool) -> Result<cranelift_codegen::isa::OwnedTargetIsa, String> {
+    if std::mem::size_of::<usize>() != 8 {
+        return Err("the native backend currently supports 64-bit targets only".to_string());
+    }
+    let mut flags = settings::builder();
+    flags.set("use_colocated_libcalls", "false").map_err(err)?;
+    // The JIT resolves symbols in-process and needs absolute references; an
+    // object linked into a PIE executable needs position-independent code.
+    flags.set("is_pic", if pic { "true" } else { "false" }).map_err(err)?;
+    flags.set("opt_level", "speed").map_err(err)?;
+    cranelift_native::builder()
+        .map_err(err)?
+        .finish(settings::Flags::new(flags))
+        .map_err(err)
+}
+
+fn validate_input(module: &ir::Module) -> Result<(), String> {
+    ir::verify(module).map_err(|e| format!("invalid IR: {e}"))?;
+    let entry_fn = module
+        .functions
+        .get(module.entry.0 as usize)
+        .ok_or("entry function out of range")?;
+    if !entry_fn.params.is_empty() || entry_fn.ret.is_some() {
+        return Err("entry function must take no arguments and return nothing".to_string());
+    }
+    Ok(())
+}
+
+/// String literals that must live in the emitted object rather than as host
+/// pointers baked into instructions. The JIT path uses the same mechanism, so
+/// lowering is identical for both outputs.
+fn collect_strings(module: &ir::Module) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for f in &module.functions {
+        for block in &f.blocks {
+            for inst in &block.insts {
+                let literal = match inst {
+                    Inst::ConstStr { value, .. } => Some(value.as_str()),
+                    Inst::Print { ty: Type::Arr | Type::Obj, .. } => Some("[object Object]"),
+                    Inst::Print { ty: Type::Null, .. } => Some("undefined"),
+                    _ => None,
+                };
+                if let Some(text) = literal {
+                    if seen.insert(text.to_owned()) {
+                        out.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 struct RtIds {
@@ -139,229 +216,449 @@ struct RtRefs {
 }
 
 pub fn compile(module: &ir::Module) -> Result<CompiledModule, String> {
-    // The backend validates its own input; it never trusts the caller to have done so.
-    ir::verify(module).map_err(|e| format!("invalid IR: {e}"))?;
-    if std::mem::size_of::<usize>() != 8 {
-        return Err("the native backend currently supports 64-bit targets only".to_string());
-    }
-    let entry_fn = module
-        .functions
-        .get(module.entry.0 as usize)
-        .ok_or("entry function out of range")?;
-    if !entry_fn.params.is_empty() || entry_fn.ret.is_some() {
-        return Err("entry function must take no arguments and return nothing".to_string());
-    }
-
-    // ---- target machine ----
-    let mut flags = settings::builder();
-    flags.set("use_colocated_libcalls", "false").map_err(err)?;
-    flags.set("is_pic", "false").map_err(err)?;
-    flags.set("opt_level", "speed").map_err(err)?;
-    let isa_builder = cranelift_native::builder().map_err(err)?;
-    let isa = isa_builder.finish(settings::Flags::new(flags)).map_err(err)?;
+    validate_input(module)?;
+    let isa = target_isa(false)?;
 
     let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-    jit_builder.symbol("rt_print_f64", runtime::rt_print_f64 as *const u8);
-    jit_builder.symbol("rt_print_bool", runtime::rt_print_bool as *const u8);
-    jit_builder.symbol("rt_print_str", runtime::rt_print_str as *const u8);
-    jit_builder.symbol("rt_alloc_str", runtime::rt_alloc_str as *const u8);
-    jit_builder.symbol("rt_concat_str", runtime::rt_concat_str as *const u8);
-    jit_builder.symbol("rt_str_eq", runtime::rt_str_eq as *const u8);
-    jit_builder.symbol("rt_num_to_str", runtime::rt_num_to_str as *const u8);
-    jit_builder.symbol("rt_bool_to_str", runtime::rt_bool_to_str as *const u8);
-    jit_builder.symbol("rt_str_len", runtime::rt_str_len as *const u8);
-    jit_builder.symbol("rt_str_upper", runtime::rt_str_upper as *const u8);
-    jit_builder.symbol("rt_str_includes", runtime::rt_str_includes as *const u8);
-    jit_builder.symbol("rt_str_slice", runtime::rt_str_slice as *const u8);
-    jit_builder.symbol("rt_str_replace", runtime::rt_str_replace as *const u8);
-    jit_builder.symbol("rt_str_split_count", runtime::rt_str_split_count as *const u8);
-    jit_builder.symbol("rt_str_to_num", runtime::rt_str_to_num as *const u8);
-    jit_builder.symbol("rt_bool_to_num", runtime::rt_bool_to_num as *const u8);
-    jit_builder.symbol("rt_alloc_array", runtime::rt_alloc_array as *const u8);
-    jit_builder.symbol("rt_array_push", runtime::rt_array_push as *const u8);
-    jit_builder.symbol("rt_array_get", runtime::rt_array_get as *const u8);
-    jit_builder.symbol("rt_array_set", runtime::rt_array_set as *const u8);
-    jit_builder.symbol("rt_array_len", runtime::rt_array_len as *const u8);
-    jit_builder.symbol("rt_alloc_obj", runtime::rt_alloc_obj as *const u8);
-    jit_builder.symbol("rt_obj_set_num", runtime::rt_obj_set_num as *const u8);
-    jit_builder.symbol("rt_obj_get_num", runtime::rt_obj_get_num as *const u8);
-    jit_builder.symbol("rt_obj_set_str", runtime::rt_obj_set_str as *const u8);
-    jit_builder.symbol("rt_obj_get_str", runtime::rt_obj_get_str as *const u8);
-    jit_builder.symbol("rt_obj_set_obj", runtime::rt_obj_set_obj as *const u8);
-    jit_builder.symbol("rt_obj_get_obj", runtime::rt_obj_get_obj as *const u8);
-    jit_builder.symbol("rt_fmod", runtime::rt_fmod as *const u8);
+    register_runtime_symbols(&mut jit_builder);
     let mut jit = JITModule::new(jit_builder);
+    let emitted = emit_module(&mut jit, module)?;
 
-    // ---- runtime imports ----
+    jit.finalize_definitions().map_err(err)?;
+    let code = jit.get_finalized_function(emitted.ids[module.entry.0 as usize]);
+    // SAFETY: the entry function was declared with the signature `(i64) -> ()` (the
+    // hidden execution-context pointer) and the default (host) calling convention,
+    // which matches `extern "C" fn(*mut ExecContext)` on a 64-bit target (checked
+    // by `target_isa`). The code stays mapped for as long as `jit` lives, and
+    // `CompiledModule` owns `jit`.
+    let entry = unsafe { std::mem::transmute::<*const u8, extern "C" fn(*mut ExecContext)>(code) };
+    Ok(CompiledModule { _jit: jit, entry })
+}
+
+/// Emits a relocatable object with the program plus a C ABI `main`, ready for
+/// [`link_executable`]. The lowering is the same as the JIT path; only the
+/// `Module` implementation differs.
+pub fn compile_object(module: &ir::Module) -> Result<Vec<u8>, String> {
+    validate_input(module)?;
+    let isa = target_isa(true)?;
+    let builder = ObjectBuilder::new(isa, "engine_native", default_libcall_names()).map_err(err)?;
+    let mut object = ObjectModule::new(builder);
+    let emitted = emit_module(&mut object, module)?;
+    emit_main(&mut object, emitted.ids[module.entry.0 as usize])?;
+    object
+        .finish()
+        .emit()
+        .map_err(|e| format!("object emission failed: {e}"))
+}
+
+fn register_runtime_symbols(builder: &mut JITBuilder) {
+    builder.symbol("rt_print_f64", runtime::rt_print_f64 as *const u8);
+    builder.symbol("rt_print_bool", runtime::rt_print_bool as *const u8);
+    builder.symbol("rt_print_str", runtime::rt_print_str as *const u8);
+    builder.symbol("rt_alloc_str", runtime::rt_alloc_str as *const u8);
+    builder.symbol("rt_concat_str", runtime::rt_concat_str as *const u8);
+    builder.symbol("rt_str_eq", runtime::rt_str_eq as *const u8);
+    builder.symbol("rt_num_to_str", runtime::rt_num_to_str as *const u8);
+    builder.symbol("rt_bool_to_str", runtime::rt_bool_to_str as *const u8);
+    builder.symbol("rt_str_len", runtime::rt_str_len as *const u8);
+    builder.symbol("rt_str_upper", runtime::rt_str_upper as *const u8);
+    builder.symbol("rt_str_includes", runtime::rt_str_includes as *const u8);
+    builder.symbol("rt_str_slice", runtime::rt_str_slice as *const u8);
+    builder.symbol("rt_str_replace", runtime::rt_str_replace as *const u8);
+    builder.symbol("rt_str_split_count", runtime::rt_str_split_count as *const u8);
+    builder.symbol("rt_str_to_num", runtime::rt_str_to_num as *const u8);
+    builder.symbol("rt_bool_to_num", runtime::rt_bool_to_num as *const u8);
+    builder.symbol("rt_alloc_array", runtime::rt_alloc_array as *const u8);
+    builder.symbol("rt_array_push", runtime::rt_array_push as *const u8);
+    builder.symbol("rt_array_get", runtime::rt_array_get as *const u8);
+    builder.symbol("rt_array_set", runtime::rt_array_set as *const u8);
+    builder.symbol("rt_array_len", runtime::rt_array_len as *const u8);
+    builder.symbol("rt_alloc_obj", runtime::rt_alloc_obj as *const u8);
+    builder.symbol("rt_obj_set_num", runtime::rt_obj_set_num as *const u8);
+    builder.symbol("rt_obj_get_num", runtime::rt_obj_get_num as *const u8);
+    builder.symbol("rt_obj_set_str", runtime::rt_obj_set_str as *const u8);
+    builder.symbol("rt_obj_get_str", runtime::rt_obj_get_str as *const u8);
+    builder.symbol("rt_obj_set_obj", runtime::rt_obj_set_obj as *const u8);
+    builder.symbol("rt_obj_get_obj", runtime::rt_obj_get_obj as *const u8);
+    builder.symbol("rt_fmod", runtime::rt_fmod as *const u8);
+}
+
+fn declare_runtime<M: ClifModule>(m: &mut M) -> Result<RtIds, String> {
     let rt_ids = RtIds {
-        print_f64: jit
-            .declare_function("rt_print_f64", Linkage::Import, &make_sig(&jit, &[types::F64], None))
+        print_f64: m
+            .declare_function("rt_print_f64", Linkage::Import, &make_sig(&m, &[types::F64], None))
             .map_err(err)?,
-        print_bool: jit
-            .declare_function("rt_print_bool", Linkage::Import, &make_sig(&jit, &[types::I32], None))
+        print_bool: m
+            .declare_function("rt_print_bool", Linkage::Import, &make_sig(&m, &[types::I32], None))
             .map_err(err)?,
-        print_str: jit
-            .declare_function("rt_print_str", Linkage::Import, &make_sig(&jit, &[types::I64], None))
+        print_str: m
+            .declare_function("rt_print_str", Linkage::Import, &make_sig(&m, &[types::I64], None))
             .map_err(err)?,
-        alloc_str: jit
-            .declare_function("rt_alloc_str", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I64)))
+        alloc_str: m
+            .declare_function("rt_alloc_str", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I64)))
             .map_err(err)?,
-        concat_str: jit
-            .declare_function("rt_concat_str", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I64)))
+        concat_str: m
+            .declare_function("rt_concat_str", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I64)))
             .map_err(err)?,
-        str_eq: jit
-            .declare_function("rt_str_eq", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I32)))
+        str_eq: m
+            .declare_function("rt_str_eq", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I32)))
             .map_err(err)?,
-        num_to_str: jit
-            .declare_function("rt_num_to_str", Linkage::Import, &make_sig(&jit, &[types::F64], Some(types::I64)))
+        num_to_str: m
+            .declare_function("rt_num_to_str", Linkage::Import, &make_sig(&m, &[types::F64], Some(types::I64)))
             .map_err(err)?,
-        bool_to_str: jit
-            .declare_function("rt_bool_to_str", Linkage::Import, &make_sig(&jit, &[types::I32], Some(types::I64)))
+        bool_to_str: m
+            .declare_function("rt_bool_to_str", Linkage::Import, &make_sig(&m, &[types::I32], Some(types::I64)))
             .map_err(err)?,
-        str_len: jit
-            .declare_function("rt_str_len", Linkage::Import, &make_sig(&jit, &[types::I64], Some(types::F64)))
+        str_len: m
+            .declare_function("rt_str_len", Linkage::Import, &make_sig(&m, &[types::I64], Some(types::F64)))
             .map_err(err)?,
-        str_upper: jit
-            .declare_function("rt_str_upper", Linkage::Import, &make_sig(&jit, &[types::I64], Some(types::I64)))
+        str_upper: m
+            .declare_function("rt_str_upper", Linkage::Import, &make_sig(&m, &[types::I64], Some(types::I64)))
             .map_err(err)?,
-        str_includes: jit
-            .declare_function("rt_str_includes", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I32)))
+        str_includes: m
+            .declare_function("rt_str_includes", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I32)))
             .map_err(err)?,
-        str_slice: jit
-            .declare_function("rt_str_slice", Linkage::Import, &make_sig(&jit, &[types::I64, types::F64, types::F64], Some(types::I64)))
+        str_slice: m
+            .declare_function("rt_str_slice", Linkage::Import, &make_sig(&m, &[types::I64, types::F64, types::F64], Some(types::I64)))
             .map_err(err)?,
-        str_replace: jit
-            .declare_function("rt_str_replace", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64, types::I64], Some(types::I64)))
+        str_replace: m
+            .declare_function("rt_str_replace", Linkage::Import, &make_sig(&m, &[types::I64, types::I64, types::I64], Some(types::I64)))
             .map_err(err)?,
-        str_split_count: jit
-            .declare_function("rt_str_split_count", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::F64)))
+        str_split_count: m
+            .declare_function("rt_str_split_count", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::F64)))
             .map_err(err)?,
-        str_to_num: jit
-            .declare_function("rt_str_to_num", Linkage::Import, &make_sig(&jit, &[types::I64], Some(types::F64)))
+        str_to_num: m
+            .declare_function("rt_str_to_num", Linkage::Import, &make_sig(&m, &[types::I64], Some(types::F64)))
             .map_err(err)?,
-        bool_to_num: jit
-            .declare_function("rt_bool_to_num", Linkage::Import, &make_sig(&jit, &[types::I32], Some(types::F64)))
+        bool_to_num: m
+            .declare_function("rt_bool_to_num", Linkage::Import, &make_sig(&m, &[types::I32], Some(types::F64)))
             .map_err(err)?,
-        alloc_array: jit
-            .declare_function("rt_alloc_array", Linkage::Import, &make_sig(&jit, &[types::I64], Some(types::I64)))
+        alloc_array: m
+            .declare_function("rt_alloc_array", Linkage::Import, &make_sig(&m, &[types::I64], Some(types::I64)))
             .map_err(err)?,
-        array_push: jit
-            .declare_function("rt_array_push", Linkage::Import, &make_sig(&jit, &[types::I64, types::F64], None))
+        array_push: m
+            .declare_function("rt_array_push", Linkage::Import, &make_sig(&m, &[types::I64, types::F64], None))
             .map_err(err)?,
-        array_get: jit
-            .declare_function("rt_array_get", Linkage::Import, &make_sig(&jit, &[types::I64, types::F64], Some(types::F64)))
+        array_get: m
+            .declare_function("rt_array_get", Linkage::Import, &make_sig(&m, &[types::I64, types::F64], Some(types::F64)))
             .map_err(err)?,
-        array_set: jit
-            .declare_function("rt_array_set", Linkage::Import, &make_sig(&jit, &[types::I64, types::F64, types::F64], None))
+        array_set: m
+            .declare_function("rt_array_set", Linkage::Import, &make_sig(&m, &[types::I64, types::F64, types::F64], None))
             .map_err(err)?,
-        array_len: jit
-            .declare_function("rt_array_len", Linkage::Import, &make_sig(&jit, &[types::I64], Some(types::F64)))
+        array_len: m
+            .declare_function("rt_array_len", Linkage::Import, &make_sig(&m, &[types::I64], Some(types::F64)))
             .map_err(err)?,
-        alloc_obj: jit
-            .declare_function("rt_alloc_obj", Linkage::Import, &make_sig(&jit, &[], Some(types::I64)))
+        alloc_obj: m
+            .declare_function("rt_alloc_obj", Linkage::Import, &make_sig(&m, &[], Some(types::I64)))
             .map_err(err)?,
-        obj_set_num: jit
-            .declare_function("rt_obj_set_num", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64, types::F64], None))
+        obj_set_num: m
+            .declare_function("rt_obj_set_num", Linkage::Import, &make_sig(&m, &[types::I64, types::I64, types::F64], None))
             .map_err(err)?,
-        obj_get_num: jit
-            .declare_function("rt_obj_get_num", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::F64)))
+        obj_get_num: m
+            .declare_function("rt_obj_get_num", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::F64)))
             .map_err(err)?,
-        obj_set_str: jit
-            .declare_function("rt_obj_set_str", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64, types::I64], None))
+        obj_set_str: m
+            .declare_function("rt_obj_set_str", Linkage::Import, &make_sig(&m, &[types::I64, types::I64, types::I64], None))
             .map_err(err)?,
-        obj_get_str: jit
-            .declare_function("rt_obj_get_str", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I64)))
+        obj_get_str: m
+            .declare_function("rt_obj_get_str", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I64)))
             .map_err(err)?,
-        obj_set_obj: jit
-            .declare_function("rt_obj_set_obj", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64, types::I64], None))
+        obj_set_obj: m
+            .declare_function("rt_obj_set_obj", Linkage::Import, &make_sig(&m, &[types::I64, types::I64, types::I64], None))
             .map_err(err)?,
-        obj_get_obj: jit
-            .declare_function("rt_obj_get_obj", Linkage::Import, &make_sig(&jit, &[types::I64, types::I64], Some(types::I64)))
+        obj_get_obj: m
+            .declare_function("rt_obj_get_obj", Linkage::Import, &make_sig(&m, &[types::I64, types::I64], Some(types::I64)))
             .map_err(err)?,
-        fmod: jit
+        fmod: m
             .declare_function(
                 "rt_fmod",
                 Linkage::Import,
-                &make_sig(&jit, &[types::F64, types::F64], Some(types::F64)),
+                &make_sig(&m, &[types::F64, types::F64], Some(types::F64)),
             )
             .map_err(err)?,
     };
 
-    // ---- declare every function first so calls can refer to later ones ----
+    Ok(rt_ids)
+}
+
+fn runtime_refs<M: ClifModule>(m: &mut M, rt_ids: &RtIds, func: &mut clif::Function) -> RtRefs {
+        let rt = RtRefs {
+            print_f64: m.declare_func_in_func(rt_ids.print_f64, func),
+            print_bool: m.declare_func_in_func(rt_ids.print_bool, func),
+            print_str: m.declare_func_in_func(rt_ids.print_str, func),
+            alloc_str: m.declare_func_in_func(rt_ids.alloc_str, func),
+            concat_str: m.declare_func_in_func(rt_ids.concat_str, func),
+            str_eq: m.declare_func_in_func(rt_ids.str_eq, func),
+            num_to_str: m.declare_func_in_func(rt_ids.num_to_str, func),
+            bool_to_str: m.declare_func_in_func(rt_ids.bool_to_str, func),
+            str_len: m.declare_func_in_func(rt_ids.str_len, func),
+            str_upper: m.declare_func_in_func(rt_ids.str_upper, func),
+            str_includes: m.declare_func_in_func(rt_ids.str_includes, func),
+            str_slice: m.declare_func_in_func(rt_ids.str_slice, func),
+            str_replace: m.declare_func_in_func(rt_ids.str_replace, func),
+            str_split_count: m.declare_func_in_func(rt_ids.str_split_count, func),
+            alloc_array: m.declare_func_in_func(rt_ids.alloc_array, func),
+            array_push: m.declare_func_in_func(rt_ids.array_push, func),
+            array_get: m.declare_func_in_func(rt_ids.array_get, func),
+            array_set: m.declare_func_in_func(rt_ids.array_set, func),
+            array_len: m.declare_func_in_func(rt_ids.array_len, func),
+            alloc_obj: m.declare_func_in_func(rt_ids.alloc_obj, func),
+            obj_set_num: m.declare_func_in_func(rt_ids.obj_set_num, func),
+            obj_get_num: m.declare_func_in_func(rt_ids.obj_get_num, func),
+            obj_set_str: m.declare_func_in_func(rt_ids.obj_set_str, func),
+            obj_get_str: m.declare_func_in_func(rt_ids.obj_get_str, func),
+            obj_set_obj: m.declare_func_in_func(rt_ids.obj_set_obj, func),
+            obj_get_obj: m.declare_func_in_func(rt_ids.obj_get_obj, func),
+            str_to_num: m.declare_func_in_func(rt_ids.str_to_num, func),
+            bool_to_num: m.declare_func_in_func(rt_ids.bool_to_num, func),
+            fmod: m.declare_func_in_func(rt_ids.fmod, func),
+        };
+        rt
+}
+
+fn emit_module<M: ClifModule>(m: &mut M, module: &ir::Module) -> Result<Emitted, String> {
+    let rt_ids = declare_runtime(m)?;
+
+    // Declare every function first so calls can refer to later ones.
     let mut ids: Vec<FuncId> = Vec::with_capacity(module.functions.len());
     let mut sigs: Vec<clif::Signature> = Vec::with_capacity(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
         // Hidden first parameter: pointer to the execution context.
         let mut params: Vec<clif::Type> = vec![types::I64];
         params.extend(f.params.iter().map(|t| clif_type(*t)));
-        let sig = make_sig(&jit, &params, f.ret.map(clif_type));
+        let sig = make_sig(m, &params, f.ret.map(clif_type));
         // JS names can collide with runtime symbols (or contain `$`), so use index-based names.
         let symbol = format!("js_fn_{i}");
-        let id = jit.declare_function(&symbol, Linkage::Export, &sig).map_err(err)?;
+        let id = m.declare_function(&symbol, Linkage::Export, &sig).map_err(err)?;
         ids.push(id);
         sigs.push(sig);
     }
 
-    // ---- define ----
-    let mut ctx = jit.make_context();
+    // String literals become data symbols. Baking a host pointer into an
+    // instruction would be meaningless in a standalone executable.
+    let mut strings = HashMap::new();
+    for (i, text) in collect_strings(module).into_iter().enumerate() {
+        let name = format!("str_lit_{i}");
+        let id = m
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(err)?;
+        let mut desc = DataDescription::new();
+        desc.define(text.as_bytes().to_vec().into_boxed_slice());
+        desc.set_align(1);
+        m.define_data(id, &desc).map_err(err)?;
+        strings.insert(text, id);
+    }
+
+    let mut ctx = m.make_context();
     let mut fb_ctx = FunctionBuilderContext::new();
     for (i, f) in module.functions.iter().enumerate() {
         ctx.func.signature = sigs[i].clone();
         let refs: Vec<clif::FuncRef> = ids
             .iter()
-            .map(|id| jit.declare_func_in_func(*id, &mut ctx.func))
+            .map(|id| m.declare_func_in_func(*id, &mut ctx.func))
             .collect();
-        let rt = RtRefs {
-            print_f64: jit.declare_func_in_func(rt_ids.print_f64, &mut ctx.func),
-            print_bool: jit.declare_func_in_func(rt_ids.print_bool, &mut ctx.func),
-            print_str: jit.declare_func_in_func(rt_ids.print_str, &mut ctx.func),
-            alloc_str: jit.declare_func_in_func(rt_ids.alloc_str, &mut ctx.func),
-            concat_str: jit.declare_func_in_func(rt_ids.concat_str, &mut ctx.func),
-            str_eq: jit.declare_func_in_func(rt_ids.str_eq, &mut ctx.func),
-            num_to_str: jit.declare_func_in_func(rt_ids.num_to_str, &mut ctx.func),
-            bool_to_str: jit.declare_func_in_func(rt_ids.bool_to_str, &mut ctx.func),
-            str_len: jit.declare_func_in_func(rt_ids.str_len, &mut ctx.func),
-            str_upper: jit.declare_func_in_func(rt_ids.str_upper, &mut ctx.func),
-            str_includes: jit.declare_func_in_func(rt_ids.str_includes, &mut ctx.func),
-            str_slice: jit.declare_func_in_func(rt_ids.str_slice, &mut ctx.func),
-            str_replace: jit.declare_func_in_func(rt_ids.str_replace, &mut ctx.func),
-            str_split_count: jit.declare_func_in_func(rt_ids.str_split_count, &mut ctx.func),
-            alloc_array: jit.declare_func_in_func(rt_ids.alloc_array, &mut ctx.func),
-            array_push: jit.declare_func_in_func(rt_ids.array_push, &mut ctx.func),
-            array_get: jit.declare_func_in_func(rt_ids.array_get, &mut ctx.func),
-            array_set: jit.declare_func_in_func(rt_ids.array_set, &mut ctx.func),
-            array_len: jit.declare_func_in_func(rt_ids.array_len, &mut ctx.func),
-            alloc_obj: jit.declare_func_in_func(rt_ids.alloc_obj, &mut ctx.func),
-            obj_set_num: jit.declare_func_in_func(rt_ids.obj_set_num, &mut ctx.func),
-            obj_get_num: jit.declare_func_in_func(rt_ids.obj_get_num, &mut ctx.func),
-            obj_set_str: jit.declare_func_in_func(rt_ids.obj_set_str, &mut ctx.func),
-            obj_get_str: jit.declare_func_in_func(rt_ids.obj_get_str, &mut ctx.func),
-            obj_set_obj: jit.declare_func_in_func(rt_ids.obj_set_obj, &mut ctx.func),
-            obj_get_obj: jit.declare_func_in_func(rt_ids.obj_get_obj, &mut ctx.func),
-            str_to_num: jit.declare_func_in_func(rt_ids.str_to_num, &mut ctx.func),
-            bool_to_num: jit.declare_func_in_func(rt_ids.bool_to_num, &mut ctx.func),
-            fmod: jit.declare_func_in_func(rt_ids.fmod, &mut ctx.func),
-        };
+        let rt = runtime_refs(m, &rt_ids, &mut ctx.func);
+        let literals: HashMap<String, clif::GlobalValue> = strings
+            .iter()
+            .map(|(text, id)| (text.clone(), m.declare_data_in_func(*id, &mut ctx.func)))
+            .collect();
         {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
-            translate(&mut builder, f, &refs, &rt)
+            translate(&mut builder, f, &refs, &rt, &literals)
                 .map_err(|e| format!("in function '{}': {e}", f.name))?;
             builder.finalize();
         }
-        jit.define_function(ids[i], &mut ctx)
+        m.define_function(ids[i], &mut ctx)
             .map_err(|e| format!("in function '{}': {e}", f.name))?;
-        jit.clear_context(&mut ctx);
+        m.clear_context(&mut ctx);
+    }
+    Ok(Emitted { ids })
+}
+
+/// Adds a C ABI `int main(void)` that initialises an `ExecContext` on its stack,
+/// calls the program entry, and returns the recorded error code.
+fn emit_main<M: ClifModule>(m: &mut M, entry: FuncId) -> Result<(), String> {
+    let mut sig = m.make_signature();
+    sig.returns.push(AbiParam::new(types::I32));
+    let main_id = m
+        .declare_function("main", Linkage::Export, &sig)
+        .map_err(err)?;
+
+    let mut report_sig = m.make_signature();
+    report_sig.params.push(AbiParam::new(types::I32));
+    let report_id = m
+        .declare_function("rt_report_error", Linkage::Import, &report_sig)
+        .map_err(err)?;
+
+    let mut ctx = m.make_context();
+    ctx.func.signature = sig;
+    let entry_ref = m.declare_func_in_func(entry, &mut ctx.func);
+    let report_ref = m.declare_func_in_func(report_id, &mut ctx.func);
+    let mut fb_ctx = FunctionBuilderContext::new();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let block = b.create_block();
+        b.switch_to_block(block);
+
+        let size = std::mem::size_of::<ExecContext>() as u32;
+        // align_shift is log2(alignment); ExecContext contains only u32 fields.
+        let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
+        let ctx_ptr = b.ins().stack_addr(types::I64, slot, 0);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().store(MemFlags::new(), zero, ctx_ptr, 0);
+
+        b.ins().call(entry_ref, &[ctx_ptr]);
+        let error = b
+            .ins()
+            .load(types::I32, MemFlags::new(), ctx_ptr, runtime::CTX_ERROR_OFFSET);
+        let failed = b.create_block();
+        let done = b.create_block();
+        let non_zero = b.ins().icmp_imm(IntCC::NotEqual, error, 0);
+        b.ins().brif(non_zero, failed, &[], done, &[]);
+        b.switch_to_block(failed);
+        b.ins().call(report_ref, &[error]);
+        b.ins().jump(done, &[]);
+        b.switch_to_block(done);
+        b.ins().return_(&[error]);
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    m.define_function(main_id, &mut ctx).map_err(err)?;
+    Ok(())
+}
+
+/// Finds the static runtime library produced alongside the engine binary.
+/// `ORB_RUNTIME_LIB` overrides discovery. Cargo names static libraries
+/// `libruntime.a` on Unix and `runtime.lib` with MSVC.
+pub fn find_runtime_lib() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("ORB_RUNTIME_LIB") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &["runtime.lib", "libruntime.a", "runtime.a"]
+    } else {
+        &["libruntime.a", "runtime.a"]
+    };
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..8 {
+        for profile in ["release", "debug"] {
+            for sub in ["", "deps"] {
+                let base = dir.join("target").join(profile).join(sub);
+                for name in names {
+                    let candidate = base.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        for name in names {
+            let direct = dir.join(name);
+            if direct.is_file() {
+                return Some(direct);
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Links an emitted object with the runtime static library into an executable.
+///
+/// Unix uses the C compiler driver directly. Windows uses `rustc` as the
+/// linker driver: it knows the MSVC system libraries a Rust staticlib needs
+/// and handles COFF objects and `.lib` inputs without extra configuration.
+/// `ORB_AOT_LINKER=rustc` forces that path on other hosts.
+pub fn link_executable(object: &[u8], output: &Path, runtime_lib: Option<&Path>) -> Result<(), String> {
+    let lib = match runtime_lib {
+        Some(path) => path.to_path_buf(),
+        None => find_runtime_lib().ok_or_else(|| {
+            "runtime static library not found; build the workspace with `cargo build --release` or set ORB_RUNTIME_LIB".to_string()
+        })?,
+    };
+
+    let scratch = std::env::temp_dir().join(format!("engine-aot-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(err)?;
+    let obj_name = if cfg!(windows) { "program.obj" } else { "program.o" };
+    let obj_path = scratch.join(obj_name);
+    std::fs::write(&obj_path, object).map_err(err)?;
+
+    let use_rustc = cfg!(windows)
+        || std::env::var("ORB_AOT_LINKER").as_deref() == Ok("rustc");
+    let (program, label) = if use_rustc {
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+        (rustc, "rustc")
+    } else {
+        ("cc".to_owned(), "cc")
+    };
+
+    let mut cmd = Command::new(&program);
+    if use_rustc {
+        let dir = lib.parent().unwrap_or_else(|| Path::new("."));
+        let stem = lib
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("runtime")
+            .strip_prefix("lib")
+            .unwrap_or_else(|| lib.file_stem().and_then(|s| s.to_str()).unwrap_or("runtime"));
+        // Feed an empty `#![no_main]` crate on stdin so rustc acts purely as a
+        // linker driver; the real `main` comes from the emitted object.
+        cmd.arg("-C")
+            .arg(format!("link-arg={}", obj_path.display()))
+            .arg("-L")
+            .arg(format!("native={}", dir.display()))
+            .arg("-l")
+            .arg(format!("static={stem}"))
+            .arg("-o")
+            .arg(output)
+            .arg("-");
+    } else {
+        cmd.arg(&obj_path).arg(&lib).arg("-o").arg(output);
+        if cfg!(target_os = "macos") {
+            cmd.args(["-lm", "-lpthread"]);
+        } else {
+            cmd.args(["-lm", "-ldl", "-lpthread"]);
+        }
     }
 
-    jit.finalize_definitions().map_err(err)?;
-    let code = jit.get_finalized_function(ids[module.entry.0 as usize]);
-    // SAFETY: the entry function was declared with the signature `(i64) -> ()` (the
-    // hidden execution-context pointer) and the default (host) calling convention,
-    // which matches `extern "C" fn(*mut ExecContext)` on a 64-bit target (checked
-    // above). The code stays mapped for as long as `jit` lives, and
-    // `CompiledModule` owns `jit`.
-    let entry = unsafe { std::mem::transmute::<*const u8, extern "C" fn(*mut ExecContext)>(code) };
-    Ok(CompiledModule { _jit: jit, entry })
+    let status = if use_rustc {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to run linker '{label}': {e}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(b"#![no_main]\n").map_err(err)?;
+        }
+        child
+            .wait()
+            .map_err(|e| format!("failed to wait for linker '{label}': {e}"))?
+    } else {
+        cmd.status()
+            .map_err(|e| format!("failed to run linker '{label}': {e}"))?
+    };
+    if !status.success() {
+        return Err(format!(
+            "linker '{label}' failed with {status}; if it reports a missing rt_* symbol, rebuild the workspace with `cargo build --release` so the runtime static library matches this engine"
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(output).map_err(err)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(output, perms).map_err(err)?;
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    Ok(())
 }
 
 fn get(values: &[Option<clif::Value>], v: ir::Value) -> Result<clif::Value, String> {
@@ -393,11 +690,28 @@ fn return_zero(b: &mut FunctionBuilder, ret: Option<Type>) {
     }
 }
 
+/// Materialises `(pointer, length)` for a literal from the module's data
+/// symbols. Unlike a host pointer immediate, this survives into an object file.
+fn string_operand(
+    b: &mut FunctionBuilder,
+    literals: &HashMap<String, clif::GlobalValue>,
+    text: &str,
+) -> Result<(clif::Value, clif::Value), String> {
+    let gv = literals
+        .get(text)
+        .ok_or_else(|| format!("missing data symbol for literal {text:?}"))?;
+    Ok((
+        b.ins().symbol_value(types::I64, *gv),
+        b.ins().iconst(types::I64, text.len() as i64),
+    ))
+}
+
 fn translate(
     b: &mut FunctionBuilder,
     f: &ir::Function,
     refs: &[clif::FuncRef],
     rt: &RtRefs,
+    literals: &HashMap<String, clif::GlobalValue>,
 ) -> Result<(), String> {
     let blocks: Vec<clif::Block> = f.blocks.iter().map(|_| b.create_block()).collect();
     // A separate prologue block receives the parameters and runs the depth check
@@ -566,17 +880,14 @@ fn translate(
                             b.ins().call(rt.print_str, &[v]);
                         }
                         Type::Arr | Type::Obj => {
-                            let static_str: &'static str = "[object Object]";
-                            let ptr_val = b.ins().iconst(types::I64, static_str.as_ptr() as i64);
-                            let len_val = b.ins().iconst(types::I64, static_str.len() as i64);
+                            let (ptr_val, len_val) =
+                                string_operand(b, literals, "[object Object]")?;
                             let call = b.ins().call(rt.alloc_str, &[ptr_val, len_val]);
                             let handle = b.inst_results(call)[0];
                             b.ins().call(rt.print_str, &[handle]);
                         }
                         Type::Null => {
-                            let static_str: &'static str = "undefined";
-                            let ptr_val = b.ins().iconst(types::I64, static_str.as_ptr() as i64);
-                            let len_val = b.ins().iconst(types::I64, static_str.len() as i64);
+                            let (ptr_val, len_val) = string_operand(b, literals, "undefined")?;
                             let call = b.ins().call(rt.alloc_str, &[ptr_val, len_val]);
                             let handle = b.inst_results(call)[0];
                             b.ins().call(rt.print_str, &[handle]);
@@ -584,10 +895,7 @@ fn translate(
                     }
                 }
                 Inst::ConstStr { dst, value } => {
-                    // String literals are leaked into a static buffer so the pointer remains valid for the JIT process
-                    let static_str: &'static str = Box::leak(value.clone().into_boxed_str());
-                    let ptr_val = b.ins().iconst(types::I64, static_str.as_ptr() as i64);
-                    let len_val = b.ins().iconst(types::I64, static_str.len() as i64);
+                    let (ptr_val, len_val) = string_operand(b, literals, value)?;
                     let call = b.ins().call(rt.alloc_str, &[ptr_val, len_val]);
                     let handle = b.inst_results(call)[0];
                     values[dst.0 as usize] = Some(handle);
@@ -890,5 +1198,23 @@ mod tests {
         };
         let module = Module { functions: vec![f], entry: FuncRef(0) };
         assert!(compile(&module).is_err());
+    }
+
+    #[test]
+    fn object_output_contains_a_c_main_and_string_data() {
+        let module = compiler::compile_optimized(
+            "let s = 'aot literal'; console.log(s); console.log(610);",
+        )
+        .unwrap_or_else(|d| panic!("compile error: {}", d.message));
+        let object = compile_object(&module).expect("object emission failed");
+
+        // A native object file starts with the ELF magic on 64-bit Unix hosts.
+        #[cfg(target_os = "linux")]
+        assert_eq!(&object[..4], b"\x7fELF");
+        assert!(object.len() > 256, "object is unexpectedly small");
+        let text = String::from_utf8_lossy(&object);
+        assert!(text.contains("main"), "missing C main symbol");
+        assert!(text.contains("js_fn_0"), "missing entry symbol");
+        assert!(text.contains("str_lit_"), "missing string literal data");
     }
 }

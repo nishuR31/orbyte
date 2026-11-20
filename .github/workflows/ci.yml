@@ -9,7 +9,11 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -19,9 +23,28 @@ jobs:
         with:
           node-version: 22
       - name: Check
+        shell: bash
         run: cargo check --workspace --all-targets
       - name: Test (includes the JIT, the interpreter and the Node differential tests)
+        shell: bash
         run: cargo test --workspace
+      - name: Set up MSVC linker (Windows AOT)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: AOT smoke test
+        shell: bash
+        run: |
+          cargo build --release
+          BIN="target/release/orb"
+          OUT="orb-aot-smoke"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN="$BIN.exe"
+            OUT="$OUT.exe"
+          fi
+          "$BIN" build --native examples/javascript/calculate.js -o "$OUT"
+          result=$("./$OUT")
+          test "$result" = "610"
+          echo "AOT output: $result"
 
   lint:
     runs-on: ubuntu-latest

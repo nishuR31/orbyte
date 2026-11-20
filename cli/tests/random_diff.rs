@@ -1,14 +1,14 @@
 //! Randomised differential test against Node.js.
 //!
-//! A tiny seeded generator produces programs in the subset the engine supports
+//! A tiny seeded generator produces programs in the subset the orb supports
 //! (non-negative integer arithmetic kept below 1e12, comparisons, `&&`/`||`/`!`,
 //! `if`/`else`, bounded `for` loops with `break`/`continue`, `console.log`).
-//! Each program is run by real Node.js and by the engine in all four
+//! Each program is run by real Node.js and by the orb in all four
 //! configurations (JIT and interpreter, with and without the optimiser); every
 //! output must be identical to Node's. The test is skipped, loudly, when `node`
 //! is not installed.
 //!
-//! Values stay non-negative on purpose: the engine prints `-0` as `0` and
+//! Values stay non-negative on purpose: the orb prints `-0` as `0` and
 //! formats very large or tiny numbers differently from Node, and none of that
 //! is what this test is about.
 
@@ -119,13 +119,13 @@ fn node_available() -> bool {
     Command::new("node").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
-fn run_engine(file: &Path, flags: &[&str]) -> (String, String, bool) {
-    let out = Command::new(env!("CARGO_BIN_EXE_engine"))
+fn run_orb(file: &Path, flags: &[&str]) -> (String, String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_orb"))
         .arg("run")
         .arg(file)
         .args(flags)
         .output()
-        .expect("failed to launch the engine binary");
+        .expect("failed to launch the orb binary");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -139,7 +139,7 @@ fn random_programs_match_node_on_every_backend() {
         eprintln!("SKIPPED: `node` is not installed, so there is no independent oracle");
         return;
     }
-    let dir: PathBuf = std::env::temp_dir().join(format!("engine-random-{}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("orb-random-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
 
     let configs: [(&str, &[&str]); 4] = [
@@ -163,7 +163,7 @@ fn random_programs_match_node_on_every_backend() {
         let expected = String::from_utf8_lossy(&node.stdout).into_owned();
 
         for (label, flags) in configs {
-            let (stdout, stderr, ok) = run_engine(&file, flags);
+            let (stdout, stderr, ok) = run_orb(&file, flags);
             assert!(ok, "seed {seed} failed under `{label}`: {stderr}\n{source}");
             assert_eq!(stdout, expected, "seed {seed}: `{label}` differs from node\n{source}");
         }
